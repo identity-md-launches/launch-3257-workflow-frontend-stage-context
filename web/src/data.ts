@@ -27,6 +27,8 @@ export type Core = {
   latest: Issue | null;
   open: boolean;
   waiting: Address[];
+  /** Multicall3 is known for this chain and has code, so Deliver can be sent through it. */
+  deliverReady: boolean;
 };
 
 function usePR() {
@@ -44,14 +46,17 @@ export function useCore() {
     queryFn: async (): Promise<Core> => {
       const read = <T,>(functionName: string, args: unknown[] = []) =>
         client.readContract({ address: pr.address, abi: pr.abi, functionName, args }) as Promise<T>;
-      const [chainId, code, imd, daily, editionPrice, tip, copyPrice, subscriberCount] = await Promise.all([
+      const [chainId, code, mcCode, imd, daily, editionPrice, tip, copyPrice, subscriberCount] = await Promise.all([
         client.getChainId(), client.getCode({ address: pr.address }),
+        dep.multicall3 ? client.getCode({ address: dep.multicall3 }) : Promise.resolve(undefined),
         read<Address>("IMD"), read<Address>("DAILY"), read<bigint>("EDITION_PRICE"), read<bigint>("TIP"),
         read<bigint>("COPY_PRICE"), read<bigint>("subscriberCount"),
       ]);
       let verifyNote: string | undefined;
       if (chainId !== dep.chain.id) verifyNote = `The configured RPC answers for chain ${chainId}, not ${dep.chain.id}.`;
       else if (!code || code === "0x") verifyNote = "No contract code was found at the PaperRoute address.";
+      // Deliver goes through Multicall3; without it (or its code) delivering stays off.
+      const deliverReady = !!dep.multicall3 && !!mcCode && mcCode !== "0x";
       const decimals = Number(await client.readContract({ address: imd, abi: erc20Abi, functionName: "decimals" }));
       const count = await client.readContract({ address: daily, abi: dailyAbi, functionName: "issueCount" });
       let latest: Issue | null = null;
@@ -71,7 +76,7 @@ export function useCore() {
           }
         }
       }
-      return { verified: !verifyNote, verifyNote, imd, daily, editionPrice, tip, copyPrice, decimals, subscriberCount, latest, open, waiting };
+      return { verified: !verifyNote, verifyNote, imd, daily, editionPrice, tip, copyPrice, decimals, subscriberCount, latest, open, waiting, deliverReady };
     },
   });
 }

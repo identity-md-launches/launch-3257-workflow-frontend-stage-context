@@ -1,125 +1,149 @@
-# Paper Route website, version 2: validation record
+# Paper Route website, version 3: validation record
 
 Worker report, not an independent certification. All runs below were made on the final source and the
-export committed with this file (manifest: 1 contract, 10 assets, about 1.4 MB).
+export committed with this file (manifest: 1 contract, 10 assets, 1,413,378 bytes).
 
-## Scope and assumptions
+## Scope
 
-Version 2 changes five things on the existing page and keeps the rest:
+Version 3 changes one thing: the Deliver button. Everything else (Editions picker, Add editions,
+Cancel, the Subscribers list, the links, the look, the wording) is unchanged source from version 2.
 
-1. Editions picker: quick picks 5, 10, 50, 500 and a field for 1 to 1,000,000; 10 on load. The
-   button names `N x EDITION_PRICE` (read from the contract) exactly; it approves that amount when the
-   allowance is short and calls `subscribe(N)`, batched with `wallet_sendCalls` where supported, else
-   two transactions. Subscribers get "Add editions" (same picker, "Add N for X IMD") and "Cancel and
-   refund N IMD". The short-balance line shows only while a picker is open.
-2. Deliver: gas limit `650,000 + 200,000 x addresses` set by the page (`deliverGas`,
-   `web/src/config.ts:39`); simulation from the connected address with
-   that limit; only simulated-delivered addresses are sent; the message counts the `Delivered`
-   events PaperRoute emitted in the receipt (`web/src/actions.ts:73`), and zero
-   is an error: "Nothing was delivered and no tip was paid."
-3. Subscribers section, read without a wallet: `subscriberCount`, `subscribers(offset, 200)`,
-   `editionsLeft` and `lastDeliveredAt` per address (JSON-RPC batched, 25 a request),
-   `reservedEditions`; ENS reverse names load afterwards for the shown rows only. Refreshes on the
-   20 s poll and after subscribe, cancel and deliver.
-4. Middle width (640 to 959px): Subscribe under the headline beside the cover.
-5. Links to The IMD Daily's site and https://x.com/theimddaily under the cover and in the footer.
+What Deliver now does (`sendDeliver`, `web/src/actions.ts:66`):
 
-Decisions taken where the brief was open: the heading reads "Subscribers: N"; ties in editions left
-keep contract order; the picker keeps the visitor's last pick after a subscribe or cancel; an invalid
-field shows "Enter a whole number of editions, from 1 to 1,000,000."; the "What the X IMD pays for"
-line is hidden while prices load or the field is invalid. ENS names use viem's built-in Ethereum
-universal resolver (only on chain 1), the one address not taken from the manifest; the site still
-holds no address of its own. The share image `og.png` was regenerated because it named "5 IMD" and
-"40 editions". `DESIGN.md` moved from `docs/` to the repository root.
+1. Takes at most 25 waiting subscribers (`due()`), simulates `PaperRoute.deliver(issueId, candidates)`
+   with `eth_call` **from Multicall3's address** and keeps only the addresses it returns. None:
+   nothing is sent, "Nobody can be delivered right now. Nothing was sent."
+2. Reads `IMD.balanceOf(Multicall3)` and builds one `Multicall3.aggregate3` with two entries, both
+   `allowFailure: false`: `PaperRoute.deliver(issueId, list)` and
+   `IMD.transfer(connected wallet, list.length x TIP + IMD Multicall3 already holds)`. `TIP` is read
+   from PaperRoute.
+3. Simulates that `aggregate3` from the connected wallet. A revert: nothing is sent, "The delivery
+   would fail right now, so nothing was sent."
+4. Sends it to Multicall3, still asking for 650,000 + 200,000 x addresses gas (`deliverGas`,
+   `web/src/config.ts:39`).
+5. Waits for the receipt with viem's public client (wagmi's own wait replays a reverted call and
+   throws its reason, which hid the status). Reverted: the step reads "reverted" and the `role=alert`
+   line says "The delivery transaction reverted. Nothing was delivered and no subscriber was charged;
+   only the network fee was spent." Success: counts the `Delivered` logs PaperRoute emitted in that
+   receipt and says "Delivered N copies. X IMD in tips was paid to your wallet."
+
+Decisions where the brief was open:
+
+- Multicall3's address comes from viem's own Ethereum chain definition (`multicall3For`,
+  `web/src/config.ts:58`), as the ENS resolver already did; it equals the brief's
+  `0xcA11bde05977b3631167028862bE2a173976CA11` (checked in the live run below). It is not written
+  into `dist/imd-deployment.json`, whose top-level keys are fixed. The page checks it has code on
+  load (`deliverReady`, `web/src/data.ts:59`); without it the Deliver button is disabled and a
+  warning says so.
+- The Deliver note gains one sentence, next to the button, so the wallet's prompt is not a surprise:
+  "Your wallet shows a call to Multicall3, which delivers and passes the tips to you in the same
+  transaction." "Multicall3" links to its Etherscan page. Button label, Waiting, Tips on offer and
+  "Today's edition was delivered at" are unchanged.
+- The page re-reads contract state after every delivery attempt, including a reverted one.
+- The success message states the tips for the counted copies; IMD that Multicall3 already held is
+  swept to the deliverer too but not announced.
 
 ## Commands and results
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Typecheck | `cd web && npm run typecheck` | passed (no output); also runs inside `npm run build` |
-| Build + manifest | `cd web && npm run build` | passed; `manifest: 1 contract(s), 10 assets, 1411098 bytes`; ABI canonical keccak equals handoff `abiHash` |
-| Interaction test | `cd web && IMD_PLAYWRIGHT=<playwright-core>/index.mjs CHROMIUM=<chrome-headless-shell> npm run test:e2e` | **89 passed, 0 failed** |
-| Design probe | `node .imd/reads/skills/design-critic/scripts/taste.mjs --out test/scratch/taste` | **16/16 passed** (render, layout, targets, contrast, casing, tracking, eyebrows, type-sizes, type-faces, glyphs, slogans, repetition, copy-budget, chrome, motion, share) |
-| Live read-only check | scratch script: export in headless Chromium, public-RPC calls forwarded to this machine's read-only mainnet endpoint | 1383x968, 800x1000, 390x844, 320x640: "Subscribe for 1.25 IMD", "Subscribers: 0 / Nobody is subscribed yet." (live `subscriberCount` 0, `reservedEditions` 0), Deliver shows issue #24 on sale, no sideways scroll, no page errors. Direct reads: `getEnsName(0xd8dA…6045)` = `vitalik.eth` through the configured resolver; `simulateContract deliver(24, [])` with `gas: 650000` returns `[]` |
+| Typecheck | `cd web && npm run typecheck` | passed; also runs inside `npm run build` |
+| Build + manifest | `cd web && npm run build` | passed; `manifest: 1 contract(s), 10 assets, 1413378 bytes`; ABI canonical keccak equals handoff `abiHash` |
+| Manifest audit | scratch script | 10 assets, every SHA-256 matches, no unlisted file; `network` and `walletAddChain` byte-equal to `.imd/reads/network.json`; top-level keys `version, launchId, chainId, sourceCommit, attestationHash, contracts, assets, network, walletAddChain` |
+| Interaction test | `cd web && PLAYWRIGHT_BROWSERS_PATH=<browsers> IMD_PLAYWRIGHT=<playwright-core>/index.mjs npm run test:e2e` | **101 passed, 0 failed** |
+| Design probe | `node .imd/reads/skills/design-critic/scripts/taste.mjs --out test/scratch/taste` | **16/16 passed** (render, layout, targets, contrast, casing, tracking, eyebrows, type-sizes, type-faces, glyphs, slogans, repetition, copy-budget, chrome, motion, share); 390 screenshot inspected: headline, cover, Editions picker and Subscribe on the first screen |
+| Em dashes | search of `web/src`, `web/index.html`, `dist/index.html` | none |
+| Live read-only replay | scratch scripts with viem against Ethereum mainnet, read calls only | see below |
+
+### Live read-only replay on Ethereum (no transaction sent)
+
+- viem's `mainnet.contracts.multicall3` is `0xca11bde05977b3631167028862be2a173976ca11` and has code.
+- The proven Rainbow transaction `0x2ce5ebba…8a66b`: to Multicall3, gas 832,950, success, 2
+  `Delivered` events counted the page's way. Rebuilding its call the page's way (issue 23, its 2
+  addresses, `transfer(sender, 2 x TIP + balanceOf(Multicall3) at the block before)`) gives
+  **byte-identical calldata**.
+- The broken transaction `0xb012c07b…82ee`: success, **0** `Delivered` events counted the page's way,
+  so the page would have reported it as nothing delivered.
+- Replaying the page's steps at block 26,407,381 (just before the proven transaction): `due` = 2;
+  `deliver` simulated from Multicall3 returns 2 of 2; the built `aggregate3` simulates without revert
+  from the sender with the page's 1,050,000 gas; `eth_estimateGas` for it = 757,009, x 1.1 =
+  **832,709** (Rainbow sent 832,950), and the call succeeds at that limit. For contrast a plain
+  `deliver` estimates 121,554, and at x 1.1 it **delivers 0 of 2**. The `aggregate3` at 300,000 gas
+  reverts with "Multicall3: call failed" instead of delivering nobody.
+- Today (issue 23 open, 2 subscribers, nobody due) the live page path cannot be exercised beyond
+  "Nobody is waiting".
 
 ### What the interaction test asserts (`web/e2e/run.mjs` with `web/e2e/fakechain.mjs`)
 
-The stand-in PaperRoute now behaves like the real one on gas: a mint is tried only while 556,000 gas
-is left, each delivery uses 182,000, and below that the address is skipped without reverting; receipts
-carry the emitted `Delivered` logs; a wallet left without a gas field uses its own 200,000 estimate.
+The stand-in chain now includes Multicall3 (`aggregate3` runs entries in order as Multicall3, reverts
+everything when an `allowFailure: false` entry fails), `IMD.transfer`, a node-style `eth_estimateGas`
+(binary search for the lowest gas that does not revert), mined reverted transactions with status
+`0x0` and no logs, and three wallet behaviours: keep the page's gas, replace it with a fixed number,
+or ignore it and send `eth_estimateGas x 1.1`. PaperRoute's gas rule is modelled as before: a mint is
+tried only while 556,000 gas is left, each costs 182,000, below that the address is skipped.
 
-- Reads without a wallet: real cover URL, cover link, "Read the paper"/"@theimddaily" under the cover
-  and "The paper itself: The IMD Daily · @theimddaily" right after the disclaimer, all `target=_blank`;
-  new dek and How it works line; no em dash in the page text.
-- Picker: 10 pressed on load, "Subscribe for 1.25 IMD", "10 editions, one a day.", "What the 1.25
-  IMD pays for"; 500 gives "Subscribe for 62.5 IMD" and "50 IMD buys 500 copies… 12.5 IMD tips"; typed 7
-  gives 0.875 IMD; 1,000,000 gives 125,000 IMD; "", 0, 1.5, abc, 1000001 and -3 each disable the
-  button with the one line.
-- Subscribers: "Subscribers: 2", "80 editions prepaid in total.", ENS name shown after rows, short
-  address otherwise, Etherscan links, "none yet"; after subscribing "Subscribers: 3", own row "you",
-  order 40, 40, 10; after delivery the dates replace "none yet"; after cancel back to 2; 62
-  subscribers show 50 rows, largest first, "Show all 62" reveals 62; empty list shows "Nobody is
-  subscribed yet." and "Subscribers: 0".
-- Headline, cover, Subscribe and Deliver inside 1383x968; connect sheet, wrong network,
-  `wallet_addEthereumChain` with `walletAddChain` unchanged after 4902.
-- Balance 1 IMD: 10 editions disabled with "This needs 1.25 IMD. Your wallet holds 1 IMD.", 5
-  editions enabled. Rejected signature sends nothing.
-- Subscribe sends `approve(PaperRoute, 1.25 IMD)` then `subscribe(10)`.
-- Deliver sends `deliver(23, [3 addresses])` with gas 1,250,000, pays 3 x 0.025 IMD, says
-  "Delivered 3 copies. 0.075 IMD…", then "Today's edition was delivered at" linking the transaction.
-- **Gas case**: next issue, the wallet replaces the page's 1,250,000 with 200,000: the transaction
-  succeeds, emits no `Delivered`, pays no tip, and the page shows the `role=alert` error "Nothing was
-  delivered and no tip was paid."; the waiting count is re-read as 3.
-- Simulation delivering nobody (every mint fails while `due()` still lists them): "Nobody can be
-  delivered right now." and no transaction sent.
-- Add editions with 1 IMD: no balance line under the read-only subscription; the line and a disabled
-  "Add 10 for 1.25 IMD" appear while the picker is open and disappear on Close; with funds, picking 50
-  sends approve 6.25 IMD + `subscribe(50)`. Cancel asks first and refunds 59 x 0.125 = 7.375 IMD.
-- 640, 800 and 959px: Subscribe starts directly under the headline, left of and beside the cover;
-  Deliver and Subscribers below at full width; no sideways scroll.
-- 390 and 320 with a 123,456,789,012 IMD balance, 62 subscribers and a 55-character ENS name: no
-  sideways scroll; Subscribe button, wallet button and cover on the 390x844 first screen; the connect
-  sheet fits at 320; no page errors.
+- 6, page's gas: one `aggregate3` to Multicall3 with two entries; entry 1 `PaperRoute.deliver(23,
+  [3 addresses])`, entry 2 `IMD.transfer(wallet, 0.085 IMD)` = 3 x 0.025 + 0.01 IMD left in Multicall3
+  beforehand, both `allowFailure` false; gas asked 1,250,000; 3 `Delivered` in the receipt; the wallet
+  gains 0.085 IMD and Multicall3 ends at 0; "Delivered 3 copies. 0.075 IMD…"; "Today's edition was
+  delivered at" links that transaction; the copy appears in the history; the list refreshes.
+- 6b, wallet replaces the limit with 200,000: transaction mined reverted, no `Delivered`, no tip, no
+  subscriber's editions taken; the step reads "reverted" with its link; `role=alert` "The delivery
+  transaction reverted. Nothing was delivered and no subscriber was charged"; waiting re-read as 3.
+- 6c, wallet ignores the limit and sends `eth_estimateGas x 1.1` (Rainbow): first the stand-in
+  reproduces the bug (a plain `deliver` at its own estimate x 1.1, 89,519 gas, delivers nobody); then
+  pressing Deliver sends `aggregate3` that the wallet sends with 1,134,136 gas (its estimate x 1.1, not
+  the page's 1,250,000): 3 copies minted, 0.075 IMD reaches the wallet, every subscriber has issue 24,
+  "Delivered 3 copies".
+- 6d, `deliver` simulated from Multicall3 returns nobody: "Nobody can be delivered right now." and
+  no transaction.
+- 6e, the `aggregate3` simulation reverts (the tip transfer fails): "The delivery would fail right
+  now, so nothing was sent." and no transaction, nobody charged.
+- Unchanged and still passing: reads without a wallet, the 1383x968 first screen (headline, cover,
+  Subscribe and Deliver, now with the longer note), connect sheet, wrong network with
+  `wallet_addEthereumChain` after 4902, Editions picker prices and invalid input, low balance, a
+  rejected signature, subscribe (approve then `subscribe(10)`), Add editions (approve 6.25 then
+  `subscribe(50)`), Cancel with a 58 x 0.125 IMD refund, Subscribers list (sorting, "you", ENS,
+  Show all 62, empty), the 640/800/959 layout, no sideways scroll at 390 and 320 with long values,
+  the connect sheet at 320, and no page errors.
 
 ## Better Interface review (six domains, changed surfaces)
 
 | Domain | Status | Evidence |
 | --- | --- | --- |
-| Accessibility | Checked | picker is a `fieldset`/`legend`, quick picks are native buttons with `aria-pressed`, the field has a label, `aria-invalid` and `aria-describedby` to a `role=alert` line; 44px picks and buttons, 24px link targets; table with `th scope=col`; zero-delivery result is `role=alert`. Not performed: screen-reader session, native 200% zoom, headed keyboard walk |
-| Layout | Checked | middle width fixed (asserted at 640/800/959, screenshot at 800); first screen at 390 and 1383x968 asserted; table capped at 760px after the 1383 screenshot showed numbers far from addresses |
-| Writing | Checked | button names the exact price; one line per problem (invalid field, short balance, nobody deliverable, nothing delivered) saying what happened and what to do; no em dashes |
-| Typography | Checked | still 2 families, 2 weights, 4 sizes per width (probe); mono tabular figures in picks, counts and table |
-| Colors | Checked | pressed pick uses ink, invalid uses the red token; probe contrast passed |
-| UI | Checked | picks/field share the square newsprint button language; rest/hover/pressed/focus/disabled states; reduced motion removes the pick transition |
+| Accessibility | Checked | errors stay `role=alert`, success `role=status`, steps in an `aria-live` region; the reverted state is said in words, not only by the red marker; the new Multicall3 link is a real link with visible text and opens in a new tab like the other external links. Not performed: screen-reader session, 200% zoom, headed keyboard walk |
+| Layout | Checked | the longer Deliver note keeps the Deliver button on the 1383x968 first screen (asserted); no sideways scroll at 320/390 (asserted, probe) |
+| Writing | Checked | every outcome is one plain sentence saying what happened: nobody deliverable, would fail, reverted with "nothing was delivered and no subscriber was charged", delivered N copies with the tips; the direction about Multicall3 sits next to the button it explains; no em dashes |
+| Typography | Checked | no new sizes, weights or faces (probe: type-sizes, type-faces passed) |
+| Colors | Checked | reverted reuses the red marker token; no new colors; probe contrast passed |
+| UI | Checked | Deliver keeps its single ink button; disabled when the wallet is missing, on the wrong chain, PaperRoute unverified, Multicall3 missing, or a delivery is running |
 
 ### Findings and fixes
 
-1. HIGH, `web/src/App.tsx:324` (was the old `sendOne` deliver): the page
-   reported the simulation's result as a delivery and let the wallet pick the gas. Fixed as in item 2
-   above; rechecked by test steps 6, 6b and 6c.
-2. MEDIUM, `web/src/styles.css` `.front` at 640 to 959px: blank block under the headline beside the
-   cover. Fixed with the `lead cover / subscribe cover` areas; rechecked at three widths.
-3. MEDIUM, `web/public/og.png`: share image still said "Pay 5 IMD once. 40 editions". Regenerated.
-4. LOW, `.subs` table at 1383px: editions column about 850px from the address. Capped at 760px.
-5. LOW, `web/src/App.tsx:274`: while prices loaded the summary
-   read "What the … IMD pays for" (probe 390 screenshot). Now hidden until the price is read.
+1. HIGH, `web/src/actions.ts:66` (was a plain `deliver` with the page's gas): a wallet that drops the
+   page's limit delivered nobody. Fixed with the Multicall3 `aggregate3`; rechecked by test 6c and the
+   live replay.
+2. HIGH, `web/src/actions.ts:101`: wagmi's `waitForTransactionReceipt` threw "Missing or invalid
+   parameters" (its replay of the reverted call) instead of returning the reverted status, so the
+   page could not say "nothing was delivered". Fixed by reading the receipt with viem's public client;
+   rechecked by test 6b.
+3. MEDIUM, `web/src/App.tsx:93` / `web/src/tx.ts`: a reverted delivery left its step reading
+   "pending". Added a "reverted" step state with the red marker.
+4. LOW, `web/src/App.tsx:371`: the wallet's prompt names Multicall3, which the page never mentioned.
+   Added one sentence beside the button with an Etherscan link for the contract.
 
 ## Untested and limitations
 
-- No real transaction was broadcast: subscribe, add, cancel and deliver ran only against the
-  in-memory stand-in and a test wallet. The gas behaviour of the stand-in is a model of the measured
-  fork numbers in the brief, not PaperRoute's bytecode. Real wallet UIs (MetaMask, Rabby, Coinbase
-  Smart Wallet), whether a given wallet keeps the page's gas limit, and the `wallet_sendCalls` path
-  were not exercised.
-- The live list was empty on mainnet (0 subscribers), so populated rows and ENS names on the page
-  were only seen with the stand-in; ENS resolution itself was checked live for one address.
-- Public RPCs in `network.rpcUrls` were not called from this machine, so their acceptance of JSON-RPC
-  batches (25 calls each) is untested; viem's fallback transport moves to the next URL on failure.
-- In the live run this sandbox blocked the browser from the cover image host, so the real cover image
-  did not render there (the previous job's live run loaded it); the cover element and caption did.
-- The browser MCP preview was not used; rendered checks ran in headless Chromium scripts. Screenshots
-  stayed in `test/scratch/` and are not delivered.
-- og:image is the relative `./og.png`; absolute Open Graph URLs await the published gateway or domain.
+- No transaction was broadcast. The Multicall3 path ran against the in-memory stand-in and as
+  read-only `eth_call`/`eth_estimateGas` replays on mainnet state; real wallet UIs (Rainbow, MetaMask,
+  Rabby, Coinbase Smart Wallet) were not driven. The proven mainnet transaction is the brief's.
+- Today nobody is due on mainnet, so the page's live Deliver path was only seen up to "Nobody is
+  waiting for today's edition."
+- Public RPCs in `network.rpcUrls` were not called from this machine; reads went to the stand-in or,
+  for the replay, to this machine's read-only Ethereum endpoint.
+- The browser MCP preview was not used; rendered checks ran in headless Chromium scripts.
+  Screenshots stayed in `test/scratch/` and are not delivered.
+- og:image is the relative `./og.png`; absolute Open Graph URLs await the published domain.
 
 ## Completion
 

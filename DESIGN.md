@@ -1,6 +1,6 @@
 # Paper Route design
 
-Documents the final source of version 2 (`web/src/styles.css`, `web/src/App.tsx`, `web/src/wallet.tsx`).
+Documents the final source of version 3 (`web/src/styles.css`, `web/src/App.tsx`, `web/src/wallet.tsx`).
 
 ## Overview
 
@@ -22,7 +22,7 @@ first screen.
 | `--ink-2` | `#4a4740` | secondary text (notes, captions, table headings, legend) |
 | `--rule` | `#141414` | column and section rules |
 | `--rule-soft` | `#c9c1ad` | quiet button and quick-pick borders, table row rules, step markers |
-| `--red` | `#b3141c` | the one accent: masthead rule, Subscribe/Add fill, warnings, errors, invalid field |
+| `--red` | `#b3141c` | the one accent: masthead rule, Subscribe/Add fill, warnings, errors, invalid field, pending and reverted step markers |
 | `--red-press` | `#8e0f16` | red button hover |
 | `--ok` | `#1d5e2a` | confirmed transaction text and step marker |
 | (literal) | `#fffdf7` | Editions number field fill, so the field reads as editable |
@@ -79,14 +79,23 @@ connect sheet sits over a 45% ink backdrop.
   "What the X IMD pays for" disclosure at once.
 - Subscription view: editions-left figure, delivered covers, "Add editions" (opens the same picker
   with "Add N for X IMD" and Close) and "Cancel and refund N IMD" with an inline confirmation.
-- `Subscribers` (`web/src/App.tsx:378`): heading "Subscribers: N", one line
+- `Subscribers` (`web/src/App.tsx:390`): heading "Subscribers: N", one line
   of total editions prepaid, a compact table (short address or ENS name linking to Etherscan, a
   bordered "you" tag on the connected wallet's row and a `--paper-2` row fill, editions left right
   aligned in mono, last delivered date or "none yet"), first 50 rows then "Show all N".
 - `WalletControl` / `ConnectSheet` (`wallet.tsx`): one control; Connect, short address with
   Disconnect, or "Switch to Ethereum". Bottom sheet under 640px, centered above, focus trap, Escape.
-- `TxStatus`: ordered steps with left markers (red pending, green confirmed), explorer links, and a
-  result line (`role=status`, or `role=alert` for errors such as "Nothing was delivered").
+- `DeliverPanel` (`web/src/App.tsx:310`): issue title and sale window, a two-figure `.stats` row
+  (Waiting, Tips on offer, mono), the full-width ink button "Deliver today's edition and earn X IMD",
+  and one `.note` under it: the batch line when more than 25 wait, who pays what, and that the wallet
+  shows a call to Multicall3 (linked to its Etherscan page), which delivers and passes the tips on.
+  A `.note.warn` appears instead of a working button if Multicall3 has no code on the chain. When
+  nobody waits: "Today's edition was delivered at" with the transaction link.
+- `TxStatus` (`web/src/App.tsx:85`): ordered steps with left markers (red while waiting or pending
+  and when reverted, green confirmed), the step's state in words ("confirm in your wallet", "pending",
+  "reverted", "confirmed"), explorer links, and a result line (`role=status`, or `role=alert` for
+  errors such as "The delivery transaction reverted. Nothing was delivered and no subscriber was
+  charged" or "Nobody can be delivered right now").
 - `Cover`: linked real cover with caption (title, sale window), then `.paper-links`: "Read the paper"
   and "@theimddaily", both opening in a new tab.
 

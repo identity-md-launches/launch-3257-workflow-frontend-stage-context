@@ -90,7 +90,7 @@ function TxStatus({ state, explorer }: { state: TxState; explorer: string }) {
         <ol className="steps">
           {state.steps.map((s, i) => (
             <li key={i} data-state={s.state}>
-              <span>{s.label}: {s.state === "wallet" ? "confirm in your wallet" : s.state === "pending" ? "pending" : "confirmed"}</span>
+              <span>{s.label}: {s.state === "wallet" ? "confirm in your wallet" : s.state === "pending" ? "pending" : s.state === "reverted" ? "reverted" : "confirmed"}</span>
               {s.hash && <> <a href={`${explorer}/tx/${s.hash}`} target="_blank" rel="noopener noreferrer">View transaction</a></>}
             </li>
           ))}
@@ -321,11 +321,19 @@ function DeliverPanel({ core, loading, onDone }: { core?: Core; loading: boolean
 
   const deliver = () =>
     tx.run(async (h) => {
-      const { delivered } = await sendDeliver(config, h, address!, dep.chain.id, dep.paperRoute, core!.latest!.id, batch);
-      onDone();
-      void last.refetch();
-      if (delivered === 0)
-        throw new Error("Nothing was delivered and no tip was paid. The transaction went through but minted no copy, most likely because the wallet changed the gas limit the page set. Press Deliver again and keep the page's gas limit.");
+      let delivered: number;
+      try {
+        ({ delivered } = await sendDeliver(
+          config, h, address!, dep.chain.id,
+          { pr: dep.paperRoute, multicall3: dep.multicall3!, imd: core!.imd, tip: core!.tip },
+          core!.latest!.id, batch,
+        ));
+      } finally {
+        onDone();
+        void last.refetch();
+      }
+      // Cannot happen through Multicall3 (the tip transfer would revert), but the receipt is the authority.
+      if (delivered === 0) throw new Error("Nothing was delivered and no tip was paid. The transaction minted no copy.");
       return `Delivered ${plural(delivered, "copy", "copies")}. ${exact(BigInt(delivered) * core!.tip, dec)} IMD in tips was paid to your wallet.`;
     });
 
@@ -354,13 +362,17 @@ function DeliverPanel({ core, loading, onDone }: { core?: Core; loading: boolean
           <div><dt>Waiting</dt><dd className="mono">{core.waiting.length}</dd></div>
           <div><dt>Tips on offer</dt><dd className="mono">{amount(BigInt(core.waiting.length) * core.tip, dec)} IMD</dd></div>
         </dl>
-        <button className="btn btn-ink btn-main" onClick={isConnected ? deliver : openSheet} disabled={isConnected && (!ready || !core.verified || busy)}>
+        <button className="btn btn-ink btn-main" onClick={isConnected ? deliver : openSheet} disabled={isConnected && (!ready || !core.verified || !core.deliverReady || busy)}>
           Deliver today's edition and earn {amount(earn, dec)} IMD
         </button>
         <p className="note">
           {core.waiting.length > MAX_DELIVER_BATCH ? `One transaction serves ${MAX_DELIVER_BATCH}; press again for the rest. ` : ""}
           Anyone can deliver. You pay the network fee; the tips come from the subscribers' prepaid IMD.
+          {" "}Your wallet shows a call to{" "}
+          <a href={`${dep.file.network.explorer}/address/${dep.multicall3 ?? ""}`} target="_blank" rel="noopener noreferrer">Multicall3</a>,
+          which delivers and passes the tips to you in the same transaction.
         </p>
+        {!core.deliverReady && <p className="note warn">Multicall3 was not found on {dep.chain.name}, so delivering is off.</p>}
         {wrongChain && <p className="note warn">Switch to {dep.chain.name} at the top of the page to deliver.</p>}
       </>
     );

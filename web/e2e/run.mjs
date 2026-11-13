@@ -4,8 +4,8 @@
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { getAddress } from "viem";
-import { createChain, PRICE } from "./fakechain.mjs";
+import { decodeFunctionData, getAddress } from "viem";
+import { createChain, MULTICALL3, PRICE } from "./fakechain.mjs";
 import { deliverGasOf } from "./gas.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +23,7 @@ const grab = (name) => eval("(" + src.split(`export const ${name} = `)[1].split(
 const IMD = getAddress("0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7");
 const DAILY = getAddress("0xb8fd2b7fb37cbf03a26b4c4688ed5cce86c0a9c5");
 const PR = getAddress(prEntry.address);
-const chain = createChain({ prAbi, prAddress: PR, imd: IMD, daily: DAILY, erc20Abi: grab("erc20Abi"), dailyAbi: grab("dailyAbi") });
+const chain = createChain({ prAbi, prAddress: PR, imd: IMD, daily: DAILY, erc20Abi: grab("erc20Abi"), dailyAbi: grab("dailyAbi"), multicall3Abi: grab("multicall3Abi") });
 const s = chain.s;
 const E = 10n ** 18n;
 const USER = getAddress("0x70997970c51812dc3a010c7d01b50e0d17dc79c8");
@@ -220,16 +220,32 @@ const order = await page.locator(".subs td.n").allInnerTexts();
 check(JSON.stringify(order) === JSON.stringify(["40", "40", "10"]), `most editions left first (${order.join(",")})`);
 await shot("desktop-subscribed.png");
 
-console.log("6. Deliver with the page's gas limit");
+const erc20 = grab("erc20Abi");
+/** Decodes a sent aggregate3 into its two entries. */
+const entries = (tx) => tx.args[0].map((c) => ({
+  target: getAddress(c.target), allowFailure: c.allowFailure,
+  ...decodeFunctionData({ abi: getAddress(c.target) === PR ? prAbi : erc20, data: c.callData }),
+}));
+const balOf = (a) => s.balances[a.toLowerCase()] ?? 0n;
+const mcHeld = 10n * E / 1000n; // IMD someone left in Multicall3 earlier: swept to the deliverer too
+
+console.log("6. Deliver through Multicall3 with the page's gas limit");
+s.balances[MULTICALL3] = mcHeld;
 await btn("Deliver today's edition and earn 0.075 IMD").waitFor({ timeout: 15000 });
 check(await text("Tips on offer").isVisible(), "tips on offer shown");
-let balBefore = s.balances[USER.toLowerCase()];
+check(await text("Your wallet shows a call to Multicall3").isVisible(), "explains the Multicall3 call before signing");
+let balBefore = balOf(USER);
 await btn("Deliver today's edition and earn 0.075 IMD").click();
 await text("Delivered 3 copies. 0.075 IMD").waitFor({ timeout: 15000 });
 const d = s.sent.at(-1);
-check(d.functionName === "deliver" && d.args[0] === 23n && d.args[1].length === 3, "deliver(23, [3 simulated-delivered subscribers])");
-check(d.gas === 1_250_000n && d.gas === deliverGasOf(3), `deliver carries gas 650,000 + 3 x 200,000 = 1,250,000 (sent ${d.gas})`);
-check(s.balances[USER.toLowerCase()] - balBefore === 3n * PRICE.tip, "caller paid 3 x 0.025 IMD");
+const [e1, e2] = entries(d);
+check(d.to === MULTICALL3 && d.functionName === "aggregate3" && d.args[0].length === 2, "one aggregate3 call to Multicall3 with two entries");
+check(e1.target === PR && e1.allowFailure === false && e1.functionName === "deliver" && e1.args[0] === 23n && e1.args[1].length === 3, "entry 1: PaperRoute.deliver(23, [3 simulated-delivered subscribers]), allowFailure false");
+check(e2.target === IMD && e2.allowFailure === false && e2.functionName === "transfer" && e2.args[0] === USER && e2.args[1] === 3n * PRICE.tip + mcHeld,
+  `entry 2: IMD.transfer(wallet, 3 x 0.025 + 0.01 held = 0.085 IMD), allowFailure false (sent ${e2.args?.[1]})`);
+check(d.gas === 1_250_000n && d.gas === deliverGasOf(3), `the page still asks for 650,000 + 3 x 200,000 = 1,250,000 gas (sent ${d.gas})`);
+check(d.status === "0x1" && s.logs.filter((l) => l.tx === d.hash).length === 3, "3 Delivered events in the receipt");
+check(balOf(USER) - balBefore === 3n * PRICE.tip + mcHeld && balOf(MULTICALL3) === 0n, "the tips (and the stray 0.01 IMD) reached the wallet; Multicall3 keeps nothing");
 await text("Today's edition was delivered at").waitFor({ timeout: 15000 });
 check((await page.locator(".deliver .note.ok a").first().getAttribute("href")) === `https://etherscan.io/tx/${d.hash}`, "delivered message links the delivery transaction");
 await until(async () => (await page.locator(".copies img").count()) === 1, "delivered copy's cover shown");
@@ -237,35 +253,68 @@ check(await text("November 13, 2026").isVisible(), "delivered copy's date shown"
 await until(async () => (await page.locator(".figure .num").innerText()) === "9", "9 editions left after delivery");
 await until(async () => (await page.locator(".subs td", { hasText: "none yet" }).count()) === 0, "list refreshed after delivery: last delivered dates shown");
 
-console.log("6b. A wallet that replaces the page's gas limit: nothing minted, page says so");
+console.log("6b. A wallet that replaces the page's gas limit with too little: reverts, nothing delivered");
 s.issueCount = 24n;
 for (const a of s.list) chain.sub(a).lastDeliveredAt -= 72_000n;
-s.walletGas = 200_000n; // the wallet's own estimate, as the live bug showed
+s.walletGas = 200_000n;
 await page.reload();
 await btn("Deliver today's edition and earn 0.075 IMD").waitFor({ timeout: 15000 });
-balBefore = s.balances[USER.toLowerCase()];
-const sentBefore = s.sent.length;
+balBefore = balOf(USER);
+let left = s.list.map((a) => chain.sub(a).editionsLeft);
+let sentBefore = s.sent.length;
 await btn("Deliver today's edition and earn 0.075 IMD").click();
-await text("Nothing was delivered and no tip was paid.").waitFor({ timeout: 15000 });
+await text("The delivery transaction reverted. Nothing was delivered and no subscriber was charged").waitFor({ timeout: 15000 });
 const d2 = s.sent.at(-1);
-check(s.sent.length === sentBefore + 1 && d2.functionName === "deliver" && d2.gas === 1_250_000n && d2.gasUsed === 200_000n, "the page asked for 1,250,000 gas; the wallet sent 200,000");
-check(s.logs.filter((l) => l.tx === d2.hash).length === 0, "the transaction emitted no Delivered event");
-check(s.balances[USER.toLowerCase()] === balBefore, "no tip paid");
+check(s.sent.length === sentBefore + 1 && d2.functionName === "aggregate3" && d2.gas === 1_250_000n && d2.gasUsed === 200_000n && d2.status === "0x0", "the page asked for 1,250,000 gas; the wallet sent 200,000; the transaction reverted");
+check(s.logs.filter((l) => l.tx === d2.hash).length === 0, "no Delivered event");
+check(balOf(USER) === balBefore && s.list.map((a) => chain.sub(a).editionsLeft).join() === left.join(), "no tip paid and no subscriber charged");
 check((await page.locator(".deliver .note.error").getAttribute("role")) === "alert", "shown as an error");
+check(await text("Deliver to 3 subscribers: reverted").isVisible(), "the transaction step reads reverted, with its link");
 check((await text("Delivered 3 copies").count()) === 0 || !(await text("Delivered 3 copies").isVisible()), "the simulation's result is never shown as what happened");
 await until(async () => (await page.locator(".stats dd").first().innerText()) === "3", "waiting count re-read from chain: still 3");
 
-console.log("6c. Simulation delivers nobody: nothing is sent");
+console.log("6c. A wallet that ignores the page's gas limit and sends eth_estimateGas x 1.1 (Rainbow)");
 s.walletGas = null;
+s.walletEstimates = true;
+// The bug this fixes: the same wallet on a plain deliver() estimates a limit that mints nobody.
+const plainCall = { from: USER, to: PR, data: (await import("viem")).encodeFunctionData({ abi: prAbi, functionName: "deliver", args: [24n, s.list] }) };
+const plainEst = BigInt(chain.rpc("eth_estimateGas", [plainCall]));
+const plainSim = (await import("viem")).decodeFunctionResult({ abi: prAbi, functionName: "deliver", data: chain.rpc("eth_call", [{ ...plainCall, gas: "0x" + (plainEst * 11n / 10n).toString(16) }]) });
+check(plainSim.length === 0, `stand-in reproduces the bug: a plain deliver() at estimate x 1.1 (${plainEst * 11n / 10n} gas) delivers nobody`);
+await page.reload();
+await btn("Deliver today's edition and earn 0.075 IMD").waitFor({ timeout: 15000 });
+balBefore = balOf(USER);
+await btn("Deliver today's edition and earn 0.075 IMD").click();
+await text("Delivered 3 copies. 0.075 IMD").waitFor({ timeout: 15000 });
+const d3 = s.sent.at(-1);
+check(d3.functionName === "aggregate3" && d3.gas === 1_250_000n && d3.estimate != null && d3.gasUsed === d3.estimate * 11n / 10n && d3.gasUsed !== d3.gas,
+  `the wallet dropped the page's 1,250,000 and sent its own estimate x 1.1 = ${d3.gasUsed}`);
+check(d3.status === "0x1" && s.logs.filter((l) => l.tx === d3.hash).length === 3, "the copies were minted: 3 Delivered events");
+check(balOf(USER) - balBefore === 3n * PRICE.tip, "0.075 IMD in tips reached the wallet");
+check(s.list.every((a) => chain.sub(a).lastIssue === 24n), "every listed subscriber has issue 24");
+await until(async () => (await page.locator(".copies img").count()) === 2, "second delivered copy shown in the history");
+s.walletEstimates = false;
+
+console.log("6d. Simulation delivers nobody: nothing is sent");
+s.issueCount = 25n;
+for (const a of s.list) chain.sub(a).lastDeliveredAt -= 72_000n;
 s.mintFails = true; // due() lists them, but every mint would fail
 await page.reload();
 await btn("Deliver today's edition and earn 0.075 IMD").waitFor({ timeout: 15000 });
-const sentBefore2 = s.sent.length;
+sentBefore = s.sent.length;
 await btn("Deliver today's edition and earn 0.075 IMD").click();
 await text("Nobody can be delivered right now.").waitFor({ timeout: 15000 });
-check(s.sent.length === sentBefore2, "no deliver transaction sent");
+check(s.sent.length === sentBefore, "no transaction sent");
 s.mintFails = false;
-for (const a of s.list) chain.sub(a).lastIssue = 24n;
+
+console.log("6e. The aggregate3 simulation reverts: nothing is sent");
+s.transferBlocked = true;
+await btn("Deliver today's edition and earn 0.075 IMD").click();
+await text("The delivery would fail right now, so nothing was sent.").waitFor({ timeout: 15000 });
+check(s.sent.length === sentBefore, "no transaction sent");
+check(s.list.every((a) => chain.sub(a).lastIssue === 24n), "nobody was charged");
+s.transferBlocked = false;
+for (const a of s.list) chain.sub(a).lastIssue = 25n;
 
 console.log("7. Add editions");
 s.balances[USER.toLowerCase()] = 1n * E;
@@ -285,19 +334,19 @@ await page.locator(".pick", { hasText: /^50$/ }).click();
 await btn("Add 50 for 6.25 IMD").click();
 await text("Subscribed. 50 editions").waitFor({ timeout: 15000 });
 check(s.sent.at(-2).functionName === "approve" && s.sent.at(-2).args[1] === 6250n * E / 1000n && s.sent.at(-1).functionName === "subscribe" && s.sent.at(-1).args[0] === 50n, "approve 6.25 IMD then subscribe(50)");
-await until(async () => (await page.locator(".figure .num").innerText()) === "59", "59 editions left");
+await until(async () => (await page.locator(".figure .num").innerText()) === "58", "58 editions left (2 delivered, 50 added)");
 
 console.log("8. Cancel and refund");
-await btn("Cancel and refund 7.375 IMD").click();
-check(await text("Refund 7.375 IMD and end deliveries?").isVisible(), "asks before cancelling");
+await btn("Cancel and refund 7.25 IMD").click();
+check(await text("Refund 7.25 IMD and end deliveries?").isVisible(), "asks before cancelling");
 const before = s.balances[USER.toLowerCase()];
 await btn("Yes, cancel").click();
-await text("Cancelled. 7.375 IMD was refunded").waitFor({ timeout: 15000 });
+await text("Cancelled. 7.25 IMD was refunded").waitFor({ timeout: 15000 });
 check(s.sent.at(-1).functionName === "cancel", "cancel() sent");
-check(s.balances[USER.toLowerCase()] - before === 59n * PRICE.edition, "refund equals 59 x 0.125 IMD");
+check(s.balances[USER.toLowerCase()] - before === 58n * PRICE.edition, "refund equals 58 x 0.125 IMD");
 await until(async () => (await btn("Subscribe for 6.25 IMD").count()) > 0, "Subscribe offered again after cancelling, keeping the last pick (50)");
 await until(async () => (await text("Subscribers: 2").count()) > 0, "list refreshed after cancelling");
-check((await page.locator(".copies img").count()) === 1, "delivery history still shown after cancelling");
+check((await page.locator(".copies img").count()) === 2, "delivery history still shown after cancelling");
 
 console.log("9. A long list: first 50, then Show all");
 for (let i = 1; i <= 60; i++) {
@@ -333,7 +382,7 @@ for (const [w, h] of [[390, 844], [320, 640]]) {
   await page.setViewportSize({ width: w, height: h });
   await page.reload();
   await until(async () => (await btn("Disconnect").count()) > 0, `connected at ${w}`);
-  await text("Issue #25").waitFor({ timeout: 10000 });
+  await text("Issue #26").waitFor({ timeout: 10000 });
   await text("Subscribers: 62").waitFor({ timeout: 10000 });
   await page.waitForTimeout(500);
   const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

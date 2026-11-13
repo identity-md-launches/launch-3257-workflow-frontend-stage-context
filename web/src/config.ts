@@ -29,9 +29,11 @@ export const MAX_EDITIONS = 1_000_000n;
 /** Most addresses passed to one deliver() call (the brief: at most 25 a transaction). */
 export const MAX_DELIVER_BATCH = 25;
 /**
- * Gas limit the page sets on every deliver() itself: base plus one allowance per listed address.
+ * Gas limit the page asks the wallet for on every delivery: base plus one allowance per listed address.
  * PaperRoute tries a mint only while about 556,000 gas is left and otherwise skips the address
- * without reverting, so a wallet's own estimate (taken from a run that already skips) delivers nobody.
+ * without reverting, so a plain deliver() estimated by a wallet (Rainbow sends eth_estimateGas x 1.1)
+ * succeeds and delivers nobody. Deliveries therefore go through Multicall3 (see MULTICALL3 below);
+ * this limit is still requested, and a wallet that ignores it now estimates enough by itself.
  * Measured minimums on a mainnet fork: 596,976 gas for 1 address, 2,953,489 for 25.
  */
 export const DELIVER_GAS_BASE = 650_000n;
@@ -45,6 +47,17 @@ export const LOG_FROM_BLOCK = 26406815n;
 export const LOG_WINDOW = 40_000n;
 /** How often live state is re-read, in milliseconds. */
 export const POLL_MS = 20_000;
+/**
+ * Multicall3, the canonical deployment at 0xcA11bde05977b3631167028862bE2a173976CA11 named in the brief.
+ * Taken from viem's own Ethereum chain definition (as the ENS resolver is), only for the manifest's
+ * chain 1; any other chain gets null and Deliver stays off. The page checks it has code before use.
+ * Deliver is sent as Multicall3.aggregate3([PaperRoute.deliver(issue, list), IMD.transfer(wallet, tips)]),
+ * both allowFailure false: PaperRoute pays the tips to its caller (Multicall3), the second call passes
+ * them on, and that transfer reverts unless every listed copy was really minted.
+ */
+export const multicall3For = (chainId: number): Address | null =>
+  chainId === mainnet.id ? mainnet.contracts.multicall3.address : null;
+
 /** WalletConnect is wired only when a brief supplies an id; this one did not. */
 export const WALLETCONNECT_PROJECT_ID = "";
 
@@ -79,6 +92,8 @@ export type Deployment = {
   file: DeploymentFile;
   chain: Chain;
   paperRoute: { address: Address; abi: Abi };
+  /** Multicall3 on this chain, or null where the page does not know one (Deliver is then disabled). */
+  multicall3: Address | null;
   walletAddChain: WalletAddChain;
 };
 
@@ -113,7 +128,7 @@ export async function loadDeployment(base = "./"): Promise<Deployment> {
     nativeCurrency: n.nativeCurrency,
     blockExplorerUrls: [n.explorer],
   };
-  return { file, chain, paperRoute: { address: entry.address, abi }, walletAddChain };
+  return { file, chain, paperRoute: { address: entry.address, abi }, multicall3: multicall3For(n.chainId), walletAddChain };
 }
 
 /** Standard ERC-20 fragments used on IMD (address read from PaperRoute.IMD()). */
@@ -121,8 +136,20 @@ export const erc20Abi = [
   { type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ name: "owner", type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "allowance", stateMutability: "view", inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }], outputs: [{ type: "uint256" }] },
   { type: "function", name: "approve", stateMutability: "nonpayable", inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ type: "bool" }] },
+  { type: "function", name: "transfer", stateMutability: "nonpayable", inputs: [{ name: "to", type: "address" }, { name: "amount", type: "uint256" }], outputs: [{ type: "bool" }] },
   { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ type: "uint8" }] },
   { type: "function", name: "symbol", stateMutability: "view", inputs: [], outputs: [{ type: "string" }] },
+] as const;
+
+/** Multicall3's aggregate3 (the standard interface of the deployment at MULTICALL3). */
+export const multicall3Abi = [
+  {
+    type: "function", name: "aggregate3", stateMutability: "payable",
+    inputs: [{ name: "calls", type: "tuple[]", components: [
+      { name: "target", type: "address" }, { name: "allowFailure", type: "bool" }, { name: "callData", type: "bytes" },
+    ] }],
+    outputs: [{ name: "returnData", type: "tuple[]", components: [{ name: "success", type: "bool" }, { name: "returnData", type: "bytes" }] }],
+  },
 ] as const;
 
 /** The views PaperRoute's page reads from The IMD Daily (address read from PaperRoute.DAILY()). */

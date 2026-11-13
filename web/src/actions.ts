@@ -1,6 +1,7 @@
-import { getCapabilities, sendCalls, simulateContract, waitForCallsStatus, waitForTransactionReceipt, writeContract } from "wagmi/actions";
+import { getCapabilities, getPublicClient, readContract, sendCalls, simulateContract, waitForCallsStatus, waitForTransactionReceipt, writeContract } from "wagmi/actions";
 import { encodeFunctionData, parseEventLogs, type Abi, type Address, type Hex } from "viem";
-import { deliverGas } from "./config";
+import { deliverGas, erc20Abi, multicall3Abi } from "./config";
+import { explain } from "./tx";
 import type { Config } from "wagmi";
 import type { useTx } from "./tx";
 
@@ -45,29 +46,63 @@ export async function sendBatch(config: Config, h: Helpers, label: string, accou
   h.confirmed(hashes);
 }
 
+/** Thrown when the page decides not to send; the message is shown as it is. */
+export class NotSent extends Error {
+  name = "NotSent";
+}
+
 /**
- * deliver(issueId, addresses) with the page's own gas limit. Simulates from the connected address with
- * that same limit, sends only the addresses the simulation returns as delivered, and reports what the
- * receipt shows: the Delivered events PaperRoute emitted in that transaction, never the simulation.
+ * Today's delivery, sent through Multicall3 as one aggregate3 call with two entries, both allowFailure
+ * false: PaperRoute.deliver(issueId, list), then IMD.transfer(wallet, tips + whatever IMD Multicall3
+ * already holds). PaperRoute pays the tips to its caller, Multicall3, and the transfer passes them on.
+ * The transfer can only succeed when every listed copy was really minted, so a transaction with too
+ * little gas reverts instead of delivering nobody, and a wallet's own eth_estimateGas comes out high
+ * enough. Steps:
+ * 1. simulate deliver(issueId, candidates) from Multicall3's address; keep only the addresses it returns;
+ * 2. read IMD.balanceOf(Multicall3), build aggregate3, simulate it from the connected wallet;
+ * 3. send it with the page's gas limit (a wallet may replace it with its own estimate);
+ * 4. count the Delivered events PaperRoute emitted in the receipt. A revert means nothing happened.
  */
 export async function sendDeliver(
   config: Config, h: Helpers, account: Address, chainId: number,
-  pr: { address: Address; abi: Abi }, issueId: bigint, candidates: Address[],
+  d: { pr: { address: Address; abi: Abi }; multicall3: Address; imd: Address; tip: bigint },
+  issueId: bigint, candidates: Address[],
 ): Promise<{ delivered: number; hash: Hex }> {
+  const { pr, multicall3, imd, tip } = d;
   const { result } = await simulateContract(config, {
     address: pr.address, abi: pr.abi, functionName: "deliver", args: [issueId, candidates],
-    account, chainId, gas: deliverGas(candidates.length),
+    account: multicall3, chainId, gas: deliverGas(candidates.length),
   } as Parameters<typeof simulateContract>[1]);
   const list = result as unknown as Address[];
-  if (list.length === 0) throw new Error("Nobody can be delivered right now. Nothing was sent.");
+  if (list.length === 0) throw new NotSent("Nobody can be delivered right now. Nothing was sent.");
+
+  const held = await readContract(config, { address: imd, abi: erc20Abi, functionName: "balanceOf", args: [multicall3], chainId });
+  const amount = BigInt(list.length) * tip + held;
+  const calls = [
+    { target: pr.address, allowFailure: false, callData: encodeFunctionData({ abi: pr.abi, functionName: "deliver", args: [issueId, list] }) },
+    { target: imd, allowFailure: false, callData: encodeFunctionData({ abi: erc20Abi, functionName: "transfer", args: [account, amount] }) },
+  ] as const;
+  const gas = deliverGas(list.length);
+  try {
+    await simulateContract(config, { address: multicall3, abi: multicall3Abi, functionName: "aggregate3", args: [calls], account, chainId, gas });
+  } catch (e) {
+    // A known contract reason (an issue that just closed) is worth saying; anything else is one plain line.
+    const why = explain(e);
+    const known = /no longer on sale|no such issue/.test(why) ? ` ${why}` : " Nobody was charged. Try again in a moment.";
+    throw new NotSent(`The delivery would fail right now, so nothing was sent.${known}`);
+  }
+
   h.begin(`Deliver to ${list.length} subscriber${list.length === 1 ? "" : "s"}`);
   const hash = await writeContract(config, {
-    address: pr.address, abi: pr.abi, functionName: "deliver", args: [issueId, list],
-    account, chainId, gas: deliverGas(list.length),
-  } as Parameters<typeof writeContract>[1]);
+    address: multicall3, abi: multicall3Abi, functionName: "aggregate3", args: [calls], account, chainId, gas,
+  });
   h.sent(hash);
-  const receipt = await waitForTransactionReceipt(config, { hash, chainId });
-  if (receipt.status !== "success") throw new Error("The transaction reverted on chain. Nothing was delivered and no tip was paid.");
+  // viem's own receipt wait (wagmi's replays a reverted call and throws its reason instead of the status).
+  const receipt = await getPublicClient(config, { chainId })!.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") {
+    h.reverted();
+    throw new NotSent("The delivery transaction reverted. Nothing was delivered and no subscriber was charged; only the network fee was spent.");
+  }
   h.confirmed([hash]);
   const own = receipt.logs.filter((l) => l.address.toLowerCase() === pr.address.toLowerCase());
   const delivered = parseEventLogs({ abi: pr.abi, logs: own, eventName: "Delivered" }).length;

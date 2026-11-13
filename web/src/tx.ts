@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { BaseError, ContractFunctionRevertedError, type Hex } from "viem";
 
-export type Step = { label: string; hash?: Hex; state: "wallet" | "pending" | "done" };
+export type Step = { label: string; hash?: Hex; state: "wallet" | "pending" | "done" | "reverted" };
 export type TxState = { status: "idle" | "busy" | "done" | "error"; steps: Step[]; message?: string };
 
 const REASONS: Record<string, string> = {
@@ -16,6 +16,7 @@ const REASONS: Record<string, string> = {
 
 /** Turns a wallet or contract error into one plain sentence that says what happened and what to do. */
 export function explain(e: unknown): string {
+  if (e instanceof Error && e.name === "NotSent") return e.message;
   if (e instanceof BaseError) {
     const rejected = e.walk((x) => (x as { code?: number }).code === 4001 || /User rejected|User denied/i.test((x as Error).message ?? ""));
     if (rejected) return "You declined the request in your wallet. Nothing was sent.";
@@ -43,10 +44,13 @@ export function useTx() {
       ...s,
       steps: s.steps.map((x, i) => (i === s.steps.length - 1 ? { ...x, hash: hashes?.[hashes.length - 1] ?? x.hash, state: "done" } : x)),
     }));
-  const run = async (fn: (h: { begin: typeof begin; sent: typeof sent; confirmed: typeof confirmed }) => Promise<string>) => {
+  /** The last step's transaction was mined and reverted. */
+  const reverted = () =>
+    setState((s) => ({ ...s, steps: s.steps.map((x, i) => (i === s.steps.length - 1 ? { ...x, state: "reverted" } : x)) }));
+  const run = async (fn: (h: { begin: typeof begin; sent: typeof sent; confirmed: typeof confirmed; reverted: typeof reverted }) => Promise<string>) => {
     setState({ status: "busy", steps: [] });
     try {
-      const message = await fn({ begin, sent, confirmed });
+      const message = await fn({ begin, sent, confirmed, reverted });
       setState((s) => ({ ...s, status: "done", message }));
     } catch (e) {
       setState((s) => ({ status: "error", steps: s.steps.filter((x) => x.state !== "wallet"), message: explain(e) }));
