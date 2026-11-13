@@ -1,0 +1,30 @@
+{
+  "name": "paper-route-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && node scripts/manifest.mjs",
+    "manifest": "node scripts/manifest.mjs",
+    "preview": "vite preview --outDir ../dist",
+    "test:e2e": "node e2e/run.mjs"
+  },
+  "dependencies": {
+    "@coinbase/wallet-sdk": "^4.4.0",
+    "@tanstack/react-query": "^5.107.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.57.19",
+    "wagmi": "^2.19.5"
+  },
+  "devDependencies": {
+    "@noble/hashes": "^2.4.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.6"
+  }
+}
