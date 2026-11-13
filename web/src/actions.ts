@@ -1,5 +1,6 @@
 import { getCapabilities, sendCalls, simulateContract, waitForCallsStatus, waitForTransactionReceipt, writeContract } from "wagmi/actions";
-import { encodeFunctionData, type Abi, type Address, type Hex } from "viem";
+import { encodeFunctionData, parseEventLogs, type Abi, type Address, type Hex } from "viem";
+import { deliverGas } from "./config";
 import type { Config } from "wagmi";
 import type { useTx } from "./tx";
 
@@ -42,4 +43,33 @@ export async function sendBatch(config: Config, h: Helpers, label: string, accou
   const hashes = (status.receipts ?? []).map((r) => r.transactionHash as Hex);
   if (status.status !== "success") throw new Error("The batched calls did not go through. Nothing changed.");
   h.confirmed(hashes);
+}
+
+/**
+ * deliver(issueId, addresses) with the page's own gas limit. Simulates from the connected address with
+ * that same limit, sends only the addresses the simulation returns as delivered, and reports what the
+ * receipt shows: the Delivered events PaperRoute emitted in that transaction, never the simulation.
+ */
+export async function sendDeliver(
+  config: Config, h: Helpers, account: Address, chainId: number,
+  pr: { address: Address; abi: Abi }, issueId: bigint, candidates: Address[],
+): Promise<{ delivered: number; hash: Hex }> {
+  const { result } = await simulateContract(config, {
+    address: pr.address, abi: pr.abi, functionName: "deliver", args: [issueId, candidates],
+    account, chainId, gas: deliverGas(candidates.length),
+  } as Parameters<typeof simulateContract>[1]);
+  const list = result as unknown as Address[];
+  if (list.length === 0) throw new Error("Nobody can be delivered right now. Nothing was sent.");
+  h.begin(`Deliver to ${list.length} subscriber${list.length === 1 ? "" : "s"}`);
+  const hash = await writeContract(config, {
+    address: pr.address, abi: pr.abi, functionName: "deliver", args: [issueId, list],
+    account, chainId, gas: deliverGas(list.length),
+  } as Parameters<typeof writeContract>[1]);
+  h.sent(hash);
+  const receipt = await waitForTransactionReceipt(config, { hash, chainId });
+  if (receipt.status !== "success") throw new Error("The transaction reverted on chain. Nothing was delivered and no tip was paid.");
+  h.confirmed([hash]);
+  const own = receipt.logs.filter((l) => l.address.toLowerCase() === pr.address.toLowerCase());
+  const delivered = parseEventLogs({ abi: pr.abi, logs: own, eventName: "Delivered" }).length;
+  return { delivered, hash };
 }

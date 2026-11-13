@@ -1,7 +1,7 @@
 # Paper Route
 
 A prepaid subscription to The IMD Daily on Ethereum mainnet. A reader pays 0.125 IMD an edition
-(5 IMD for 40) and anyone may then deliver each day's issue: one copy is minted from The IMD Daily to
+(1.25 IMD for 10, for example) and anyone may then deliver each day's issue: one copy is minted from The IMD Daily to
 the subscriber for 0.1 IMD out of their credit, and the deliverer earns the remaining 0.025 IMD.
 
 Paper Route is unofficial and is not run by The IMD Daily's publisher. It launches no token, no NFT

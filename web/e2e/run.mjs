@@ -6,6 +6,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { getAddress } from "viem";
 import { createChain, PRICE } from "./fakechain.mjs";
+import { deliverGasOf } from "./gas.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const dist = resolve(here, "../../dist");
@@ -29,6 +30,7 @@ const USER = getAddress("0x70997970c51812dc3a010c7d01b50e0d17dc79c8");
 const S1 = getAddress("0x3c44cdddb6a900fa2b585dd299e03d12fa4293bc");
 const S2 = getAddress("0x15d34aaf54267db7d7c367839aaf71a00a2c6a65");
 for (const a of [S1, S2]) { chain.sub(a).editionsLeft = 40n; s.list.push(a); }
+s.ensNames[S1.toLowerCase()] = "early-reader.eth";
 s.balances[USER.toLowerCase()] = 1n * E; // too little at first
 const cover = readFileSync(resolve(here, "../public/og.png"));
 
@@ -113,20 +115,63 @@ console.log("1. Reads without a wallet (1383x968)");
 await page.goto(`${ORIGIN}/preview/`);
 await text("Issue #24").waitFor({ timeout: 15000 });
 const img = page.locator("figure.cover img");
+const SITE = "https://the-imd-daily-free-to-read-colle.sites.imd.fun/";
+const X = "https://x.com/theimddaily";
 check((await img.getAttribute("src")) === "https://the-imd-daily.duckdns.org/files/cover-23.png", "latest cover is the issue's coverURL read from The IMD Daily");
-check((await page.locator("figure.cover a").first().getAttribute("href")) === "https://the-imd-daily-free-to-read-colle.sites.imd.fun", "cover links to The IMD Daily's site");
+check((await page.locator("figure.cover a").first().getAttribute("href")) === SITE, "cover links to The IMD Daily's site");
+const links = async (scope) => page.locator(scope).evaluateAll((as) => as.map((a) => [a.textContent, a.getAttribute("href"), a.getAttribute("target")]));
+check(JSON.stringify(await links(".paper-links a")) === JSON.stringify([["Read the paper", SITE, "_blank"], ["@theimddaily", X, "_blank"]]), "under the cover: Read the paper and @theimddaily, new tab");
+check((await page.locator(".paper-line").innerText()).startsWith("The paper itself:"), "footer line starts 'The paper itself:'");
+check(JSON.stringify(await links(".paper-line a")) === JSON.stringify([["The IMD Daily", SITE, "_blank"], ["@theimddaily", X, "_blank"]]), "footer: The IMD Daily and @theimddaily, new tab");
+check(await page.evaluate(() => document.querySelector(".disclaimer").nextElementSibling.classList.contains("paper-line")), "footer paper line follows the disclaimer");
 await btn("Deliver today's edition and earn 0.05 IMD").waitFor({ timeout: 10000 });
 check(await text("Unofficial. Not run by The IMD Daily.").isVisible(), "footer disclaimer");
 check(await page.locator("footer code").innerText() === PR, "footer shows the checksummed PaperRoute address");
+check(await text("Pay once. A copy of each day's edition is minted to your wallet, for as many editions as you choose.").isVisible(), "new dek");
+check(await text("You prepay 0.125 IMD an edition, for as many editions as you like.").isVisible(), "new How it works line");
+check((await page.locator("body").innerText()).indexOf("—") === -1, "no em dash in the copy");
+
+console.log("1b. Editions picker");
+await btn("Subscribe for 1.25 IMD").waitFor({ timeout: 10000 });
+check(await page.locator('.pick[aria-pressed="true"]').innerText() === "10", "10 is picked on load");
+check(await text("10 editions, one a day.").isVisible(), "line under the button follows the pick");
+check(await text("What the 1.25 IMD pays for").isVisible(), "pays-for summary names 1.25 IMD");
+const field = page.getByLabel("Any number of editions");
+await page.locator(".pick", { hasText: /^500$/ }).click();
+check(await btn("Subscribe for 62.5 IMD").isVisible(), "500 editions: Subscribe for 62.5 IMD");
+check(await text("500 editions, one a day.").isVisible(), "500 editions, one a day.");
+await text("What the 62.5 IMD pays for").click();
+check(await text("50 IMD buys 500 copies").isVisible() && await text("12.5 IMD tips the deliveries").isVisible(), "pays-for numbers follow the pick");
+await field.fill("7");
+check(await btn("Subscribe for 0.875 IMD").isVisible() && await text("7 editions, one a day.").isVisible(), "typed 7: 0.875 IMD, updates at once");
+check((await page.locator('.pick[aria-pressed="true"]').count()) === 0, "no quick pick pressed for 7");
+await field.fill("1000000");
+check(await btn("Subscribe for 125,000 IMD").isVisible(), "1,000,000 editions accepted");
+for (const bad of ["", "0", "1.5", "abc", "1000001", "-3"]) {
+  await field.fill(bad);
+  const ok = await text("Enter a whole number of editions, from 1 to 1,000,000.").isVisible() && await btn("Subscribe").isDisabled();
+  check(ok, `field "${bad}" disables the button with one line`);
+}
+await page.locator(".pick", { hasText: /^10$/ }).click();
+
+console.log("1c. Subscribers list (no wallet)");
+await text("Subscribers: 2").waitFor({ timeout: 10000 });
+check(await text("80 editions prepaid in total.").isVisible(), "total editions prepaid from reservedEditions()");
+check((await page.locator(".subs tbody tr").count()) === 2, "one row a subscriber");
+await until(async () => (await page.locator(".subs a", { hasText: "early-reader.eth" }).count()) === 1, "ENS name shown once resolved");
+check((await page.locator(".subs a", { hasText: "early-reader.eth" }).getAttribute("href")) === `https://etherscan.io/address/${S1}`, "row links to Etherscan");
+check(await page.locator(".subs a", { hasText: `${S2.slice(0, 6)}…${S2.slice(-4)}` }).count() === 1, "address without a name in short form");
+check((await page.locator(".subs td", { hasText: "none yet" }).count()) === 2, "no delivery yet: none yet");
+
 const vh = 968;
-for (const [label, loc] of [["headline", page.locator("h1")], ["cover", img], ["Subscribe button", btn("Subscribe for 5 IMD")], ["Deliver button", btn("Deliver today's edition")]]) {
+for (const [label, loc] of [["headline", page.locator("h1")], ["cover", img], ["Subscribe button", btn("Subscribe for 1.25 IMD")], ["Deliver button", btn("Deliver today's edition")]]) {
   const b = await loc.boundingBox();
   check(b && b.y + b.height <= vh, `${label} fits the 1383x968 first screen (bottom ${b ? Math.round(b.y + b.height) : "?"})`);
 }
 await shot("desktop-disconnected.png");
 
 console.log("2. Connect sheet, wrong network, add chain");
-await btn("Subscribe for 5 IMD").click();
+await btn("Subscribe for 1.25 IMD").click();
 await page.getByRole("dialog", { name: "Connect a wallet" }).waitFor();
 check(await btn("Test Wallet").isVisible(), "EIP-6963 wallet listed by its own name");
 check(await btn("Coinbase Wallet").isVisible(), "Coinbase Wallet row listed");
@@ -136,81 +181,165 @@ check((await page.getByRole("dialog").count()) === 0, "Escape closes the sheet")
 await btn("Connect").click();
 await btn("Test Wallet").click();
 await btn("Switch to Ethereum").waitFor({ timeout: 10000 });
-check(await btn("Subscribe for 5 IMD").isDisabled(), "Subscribe disabled on the wrong network");
+check(await btn("Subscribe for 1.25 IMD").isDisabled(), "Subscribe disabled on the wrong network");
 await btn("Switch to Ethereum").click();
 await until(async () => s.added.length === 1, "wallet_addEthereumChain requested after 4902");
 check(JSON.stringify(s.added[0]) === JSON.stringify(manifest.walletAddChain), "wallet_addEthereumChain used walletAddChain unchanged");
 await until(async () => (await btn("Disconnect").count()) > 0, "switched and connected");
 check(s.walletChain === "0x1", "wallet now on chain 1");
 
-console.log("3. Low balance, then reload with funds");
-await text("This needs 5 IMD. Your wallet holds 1 IMD.").waitFor({ timeout: 10000 });
-check(await btn("Subscribe for 5 IMD").isDisabled(), "Subscribe disabled with a short balance");
+console.log("3. Low balance follows the pick");
+await text("This needs 1.25 IMD. Your wallet holds 1 IMD.").waitFor({ timeout: 10000 });
+check(await btn("Subscribe for 1.25 IMD").isDisabled(), "Subscribe disabled when the pick costs more than the balance");
+await page.locator(".pick", { hasText: /^5$/ }).click();
+await until(async () => !(await btn("Subscribe for 0.625 IMD").isDisabled()), "5 editions (0.625 IMD) affordable with 1 IMD");
+check((await text("This needs").count()) === 0 || !(await text("This needs").isVisible()), "balance line gone once affordable");
 s.balances[USER.toLowerCase()] = 100n * E;
 await page.reload();
 await until(async () => (await btn("Disconnect").count()) > 0, "reconnects after reload");
-await until(async () => !(await btn("Subscribe for 5 IMD").isDisabled()), "Subscribe enabled with 100 IMD");
-check(await text("approve 5 IMD for Paper Route, then to subscribe").isVisible(), "explains the two confirmations before signing");
+await until(async () => !(await btn("Subscribe for 1.25 IMD").isDisabled()), "Subscribe enabled with 100 IMD");
+check(await text("approve 1.25 IMD for Paper Route, then to subscribe").isVisible(), "explains the two confirmations before signing");
 
 console.log("4. Rejected signature");
 s.rejectNext = true;
-await btn("Subscribe for 5 IMD").click();
+await btn("Subscribe for 1.25 IMD").click();
 await text("You declined the request in your wallet. Nothing was sent.").waitFor({ timeout: 10000 });
 check(s.sent.length === 0, "nothing was sent");
 
-console.log("5. Subscribe: approve 5 IMD then subscribe(40)");
-await btn("Subscribe for 5 IMD").click();
-await text("Subscribed. 40 editions").waitFor({ timeout: 15000 });
-check(s.sent[0]?.functionName === "approve" && s.sent[0].to === IMD.toLowerCase() && s.sent[0].args[0] === PR && s.sent[0].args[1] === 5n * E, "approve(PaperRoute, 5 IMD) on IMD");
-check(s.sent[1]?.functionName === "subscribe" && s.sent[1].args[0] === 40n, "subscribe(40)");
+console.log("5. Subscribe: approve 1.25 IMD then subscribe(10)");
+await btn("Subscribe for 1.25 IMD").click();
+await text("Subscribed. 10 editions").waitFor({ timeout: 15000 });
+check(s.sent[0]?.functionName === "approve" && s.sent[0].to === IMD.toLowerCase() && s.sent[0].args[0] === PR && s.sent[0].args[1] === 1250n * E / 1000n, "approve(PaperRoute, 1.25 IMD) on IMD");
+check(s.sent[1]?.functionName === "subscribe" && s.sent[1].args[0] === 10n, "subscribe(10)");
 check((await page.locator(".tx a").first().getAttribute("href"))?.startsWith("https://etherscan.io/tx/0x"), "transaction link to Etherscan");
-await until(async () => (await page.locator(".figure .num").count()) > 0 && (await page.locator(".figure .num").innerText()) === "40", "Your subscription shows 40 editions left");
+await until(async () => (await page.locator(".figure .num").count()) > 0 && (await page.locator(".figure .num").innerText()) === "10", "Your subscription shows 10 editions left");
+await until(async () => (await text("Subscribers: 3").count()) > 0, "list refreshed after subscribing: Subscribers: 3");
+check(await page.locator(".subs tr.mine .you").innerText() === "you", "own row marked you");
+check(await btn("Add editions").isVisible() && await btn("Cancel and refund 1.25 IMD").isVisible(), "subscriber sees Add editions and Cancel and refund 1.25 IMD");
+const order = await page.locator(".subs td.n").allInnerTexts();
+check(JSON.stringify(order) === JSON.stringify(["40", "40", "10"]), `most editions left first (${order.join(",")})`);
 await shot("desktop-subscribed.png");
 
-console.log("6. Deliver today's edition");
+console.log("6. Deliver with the page's gas limit");
 await btn("Deliver today's edition and earn 0.075 IMD").waitFor({ timeout: 15000 });
 check(await text("Tips on offer").isVisible(), "tips on offer shown");
-const balBefore = s.balances[USER.toLowerCase()];
+let balBefore = s.balances[USER.toLowerCase()];
 await btn("Deliver today's edition and earn 0.075 IMD").click();
 await text("Delivered 3 copies. 0.075 IMD").waitFor({ timeout: 15000 });
 const d = s.sent.at(-1);
-check(d.functionName === "deliver" && d.args[0] === 23n && d.args[1].length === 3, "deliver(23, [3 due subscribers])");
+check(d.functionName === "deliver" && d.args[0] === 23n && d.args[1].length === 3, "deliver(23, [3 simulated-delivered subscribers])");
+check(d.gas === 1_250_000n && d.gas === deliverGasOf(3), `deliver carries gas 650,000 + 3 x 200,000 = 1,250,000 (sent ${d.gas})`);
 check(s.balances[USER.toLowerCase()] - balBefore === 3n * PRICE.tip, "caller paid 3 x 0.025 IMD");
 await text("Today's edition was delivered at").waitFor({ timeout: 15000 });
 check((await page.locator(".deliver .note.ok a").first().getAttribute("href")) === `https://etherscan.io/tx/${d.hash}`, "delivered message links the delivery transaction");
 await until(async () => (await page.locator(".copies img").count()) === 1, "delivered copy's cover shown");
 check(await text("November 13, 2026").isVisible(), "delivered copy's date shown");
-await until(async () => (await page.locator(".figure .num").innerText()) === "39", "39 editions left after delivery");
+await until(async () => (await page.locator(".figure .num").innerText()) === "9", "9 editions left after delivery");
+await until(async () => (await page.locator(".subs td", { hasText: "none yet" }).count()) === 0, "list refreshed after delivery: last delivered dates shown");
 
-console.log("7. Add 40 more for 5 IMD");
-await btn("Add 40 more for 5 IMD").click();
-await text("Subscribed. 40 editions").waitFor({ timeout: 15000 });
-check(s.sent.at(-2).functionName === "approve" && s.sent.at(-1).functionName === "subscribe" && s.sent.at(-1).args[0] === 40n, "approve then subscribe(40) again");
-await until(async () => (await page.locator(".figure .num").innerText()) === "79", "79 editions left");
+console.log("6b. A wallet that replaces the page's gas limit: nothing minted, page says so");
+s.issueCount = 24n;
+for (const a of s.list) chain.sub(a).lastDeliveredAt -= 72_000n;
+s.walletGas = 200_000n; // the wallet's own estimate, as the live bug showed
+await page.reload();
+await btn("Deliver today's edition and earn 0.075 IMD").waitFor({ timeout: 15000 });
+balBefore = s.balances[USER.toLowerCase()];
+const sentBefore = s.sent.length;
+await btn("Deliver today's edition and earn 0.075 IMD").click();
+await text("Nothing was delivered and no tip was paid.").waitFor({ timeout: 15000 });
+const d2 = s.sent.at(-1);
+check(s.sent.length === sentBefore + 1 && d2.functionName === "deliver" && d2.gas === 1_250_000n && d2.gasUsed === 200_000n, "the page asked for 1,250,000 gas; the wallet sent 200,000");
+check(s.logs.filter((l) => l.tx === d2.hash).length === 0, "the transaction emitted no Delivered event");
+check(s.balances[USER.toLowerCase()] === balBefore, "no tip paid");
+check((await page.locator(".deliver .note.error").getAttribute("role")) === "alert", "shown as an error");
+check((await text("Delivered 3 copies").count()) === 0 || !(await text("Delivered 3 copies").isVisible()), "the simulation's result is never shown as what happened");
+await until(async () => (await page.locator(".stats dd").first().innerText()) === "3", "waiting count re-read from chain: still 3");
+
+console.log("6c. Simulation delivers nobody: nothing is sent");
+s.walletGas = null;
+s.mintFails = true; // due() lists them, but every mint would fail
+await page.reload();
+await btn("Deliver today's edition and earn 0.075 IMD").waitFor({ timeout: 15000 });
+const sentBefore2 = s.sent.length;
+await btn("Deliver today's edition and earn 0.075 IMD").click();
+await text("Nobody can be delivered right now.").waitFor({ timeout: 15000 });
+check(s.sent.length === sentBefore2, "no deliver transaction sent");
+s.mintFails = false;
+for (const a of s.list) chain.sub(a).lastIssue = 24n;
+
+console.log("7. Add editions");
+s.balances[USER.toLowerCase()] = 1n * E;
+await page.reload();
+await until(async () => (await btn("Add editions").count()) > 0 && !(await btn("Add editions").isDisabled()), "subscription view after reload");
+check((await text("This needs").count()) === 0, "no balance line under a subscription that is only being read");
+await btn("Add editions").click();
+await btn("Add 10 for 1.25 IMD").waitFor({ timeout: 5000 });
+check(await text("This needs 1.25 IMD. Your wallet holds 1 IMD.").isVisible() && await btn("Add 10 for 1.25 IMD").isDisabled(), "balance line and disabled button while the picker is open");
+await btn("Close").click();
+check((await text("This needs").count()) === 0, "balance line gone when the picker closes");
+s.balances[USER.toLowerCase()] = 100n * E;
+await page.reload();
+await until(async () => (await btn("Add editions").count()) > 0 && !(await btn("Add editions").isDisabled()), "subscription view after reload");
+await btn("Add editions").click();
+await page.locator(".pick", { hasText: /^50$/ }).click();
+await btn("Add 50 for 6.25 IMD").click();
+await text("Subscribed. 50 editions").waitFor({ timeout: 15000 });
+check(s.sent.at(-2).functionName === "approve" && s.sent.at(-2).args[1] === 6250n * E / 1000n && s.sent.at(-1).functionName === "subscribe" && s.sent.at(-1).args[0] === 50n, "approve 6.25 IMD then subscribe(50)");
+await until(async () => (await page.locator(".figure .num").innerText()) === "59", "59 editions left");
 
 console.log("8. Cancel and refund");
-await btn("Cancel and refund 9.875 IMD").click();
-check(await text("Refund 9.875 IMD and end deliveries?").isVisible(), "asks before cancelling");
+await btn("Cancel and refund 7.375 IMD").click();
+check(await text("Refund 7.375 IMD and end deliveries?").isVisible(), "asks before cancelling");
 const before = s.balances[USER.toLowerCase()];
 await btn("Yes, cancel").click();
-await text("Cancelled. 9.875 IMD was refunded").waitFor({ timeout: 15000 });
+await text("Cancelled. 7.375 IMD was refunded").waitFor({ timeout: 15000 });
 check(s.sent.at(-1).functionName === "cancel", "cancel() sent");
-check(s.balances[USER.toLowerCase()] - before === 79n * PRICE.edition, "refund equals 79 x 0.125 IMD");
-await until(async () => (await btn("Subscribe for 5 IMD").count()) > 0, "Subscribe offered again after cancelling");
+check(s.balances[USER.toLowerCase()] - before === 59n * PRICE.edition, "refund equals 59 x 0.125 IMD");
+await until(async () => (await btn("Subscribe for 6.25 IMD").count()) > 0, "Subscribe offered again after cancelling, keeping the last pick (50)");
+await until(async () => (await text("Subscribers: 2").count()) > 0, "list refreshed after cancelling");
 check((await page.locator(".copies img").count()) === 1, "delivery history still shown after cancelling");
 
-console.log("9. Narrow widths");
+console.log("9. A long list: first 50, then Show all");
+for (let i = 1; i <= 60; i++) {
+  const a = getAddress("0x" + (0xabc000 + i).toString(16).padStart(40, "0"));
+  chain.sub(a).editionsLeft = BigInt(i * 1000); s.list.push(a);
+}
+await page.reload();
+await text("Subscribers: 62").waitFor({ timeout: 15000 });
+check((await page.locator(".subs tbody tr").count()) === 50, "50 rows shown first");
+const top = await page.locator(".subs td.n").first().innerText();
+check(top === "60,000", `largest first (${top})`);
+await btn("Show all 62").click();
+check((await page.locator(".subs tbody tr").count()) === 62, "Show all reveals every row");
+
+console.log("10. Middle width: Subscribe beside the cover");
+for (const w of [640, 800, 959]) {
+  await page.setViewportSize({ width: w, height: 1000 });
+  await page.waitForTimeout(200);
+  const [lead, cov, sub, del, subs] = await Promise.all([".lead", "figure.cover", ".subscribe", ".deliver", ".subscribers"].map((q) => page.locator(q).boundingBox()));
+  const ok = sub.y - (lead.y + lead.height) < 2 && sub.x + sub.width <= cov.x + 1 && sub.y < cov.y + cov.height
+    && del.y >= Math.max(cov.y + cov.height, sub.y + sub.height) - 1 && del.width > w - 80 && subs.y >= del.y + del.height - 1 && subs.width > w - 80;
+  check(ok, `${w}px: Subscribe directly under the headline beside the cover; Deliver and Subscribers below at full width`);
+  const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  check(over <= 0, `no horizontal scroll at ${w}`);
+  if (w === 800) { await page.evaluate(() => window.scrollTo(0, 0)); await shot("tablet-800.png"); }
+}
+
+console.log("11. Narrow widths");
 const longBal = 123456789012n * E + 123456789n;
 s.balances[USER.toLowerCase()] = longBal;
+s.ensNames[s.list[2].toLowerCase()] = "a-very-long-ens-name-for-a-subscriber-of-the-daily.eth";
 for (const [w, h] of [[390, 844], [320, 640]]) {
   await page.setViewportSize({ width: w, height: h });
   await page.reload();
   await until(async () => (await btn("Disconnect").count()) > 0, `connected at ${w}`);
-  await text("Issue #24").waitFor({ timeout: 10000 });
+  await text("Issue #25").waitFor({ timeout: 10000 });
+  await text("Subscribers: 62").waitFor({ timeout: 10000 });
+  await page.waitForTimeout(500);
   const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   check(over <= 0, `no horizontal scroll at ${w} (overflow ${over}px)`);
   if (w === 390) {
-    for (const [label, loc] of [["Subscribe button", btn("Subscribe for 5 IMD")], ["wallet button", btn("Disconnect")], ["cover", img]]) {
+    for (const [label, loc] of [["Subscribe button", btn("Subscribe for 1.25 IMD")], ["wallet button", btn("Disconnect")], ["cover", img]]) {
       const b = await loc.boundingBox();
       check(b && b.y + b.height <= h, `${label} on the 390x844 first screen`);
     }
@@ -222,6 +351,13 @@ await btn("Connect").click();
 const sheetBox = await page.getByRole("dialog").boundingBox();
 check(sheetBox && sheetBox.x >= 0 && sheetBox.x + sheetBox.width <= 320, "connect sheet fits at 320");
 await shot("mobile-320-sheet.png");
+await page.keyboard.press("Escape");
+
+console.log("12. Nobody subscribed");
+s.list = [];
+await page.reload();
+await text("Nobody is subscribed yet.").waitFor({ timeout: 15000 });
+check(await text("Subscribers: 0").isVisible(), "heading states 0");
 
 const relevant = errors.filter((e) => !/ERR_FAILED|net::|Failed to load resource/.test(e));
 check(relevant.length === 0, `no page errors (${relevant.length})`);

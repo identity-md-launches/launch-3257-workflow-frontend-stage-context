@@ -169,3 +169,54 @@ export function useLastDelivery(core: Core | undefined) {
     },
   });
 }
+
+export type SubscriberRow = { address: Address; editionsLeft: bigint; lastDeliveredAt: bigint };
+
+/**
+ * Every address with credit, read without a wallet: subscriberCount() and subscribers(offset, limit),
+ * then editionsLeft and lastDeliveredAt for each (JSON-RPC batched), plus reservedEditions().
+ * Sorted by most editions left first.
+ */
+export function useSubscribers() {
+  const { client, pr } = usePR();
+  return useQuery({
+    queryKey: ["subscribers", pr.address],
+    refetchInterval: POLL_MS,
+    queryFn: async (): Promise<{ count: bigint; reserved: bigint; rows: SubscriberRow[] }> => {
+      const read = <T,>(functionName: string, args: unknown[] = []) =>
+        client.readContract({ address: pr.address, abi: pr.abi, functionName, args }) as Promise<T>;
+      const [count, reserved] = await Promise.all([read<bigint>("subscriberCount"), read<bigint>("reservedEditions")]);
+      const PAGE = 200n;
+      const pages: Promise<Address[]>[] = [];
+      for (let off = 0n; off < count; off += PAGE) pages.push(read<Address[]>("subscribers", [off, PAGE]));
+      const addrs = [...new Set((await Promise.all(pages)).flat())];
+      const rows = await Promise.all(
+        addrs.map(async (a) => {
+          const [left, at] = await Promise.all([read<bigint>("editionsLeft", [a]), read<bigint>("lastDeliveredAt", [a])]);
+          return { address: a, editionsLeft: BigInt(left), lastDeliveredAt: BigInt(at) };
+        }),
+      );
+      rows.sort((x, y) => (x.editionsLeft === y.editionsLeft ? 0 : x.editionsLeft > y.editionsLeft ? -1 : 1));
+      return { count, reserved, rows };
+    },
+  });
+}
+
+/** ENS reverse names for the shown rows. Loads after the rows and never holds them up. */
+export function useEnsNames(addresses: Address[]) {
+  const { client, dep } = usePR();
+  const key = addresses.map((a) => a.toLowerCase()).join(",");
+  return useQuery({
+    queryKey: ["ens", key],
+    enabled: addresses.length > 0 && !!dep.chain.contracts?.ensUniversalResolver,
+    staleTime: 10 * 60_000,
+    queryFn: async (): Promise<Record<string, string>> => {
+      const names = await Promise.all(
+        addresses.map((address) => client.getEnsName({ address }).catch(() => null)),
+      );
+      const out: Record<string, string> = {};
+      addresses.forEach((a, i) => { if (names[i]) out[a.toLowerCase()] = names[i]!; });
+      return out;
+    },
+  });
+}

@@ -62,13 +62,14 @@ a:hover { color: var(--red); }
 .front {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 112px;
-  grid-template-areas: "lead cover" "subscribe subscribe" "deliver deliver";
+  grid-template-areas: "lead cover" "subscribe subscribe" "deliver deliver" "subs subs";
   column-gap: var(--space-4);
 }
 .lead { grid-area: lead; padding: var(--space-4) 0 var(--space-3); }
 .cover { grid-area: cover; padding-top: var(--space-4); }
 .subscribe { grid-area: subscribe; }
 .deliver { grid-area: deliver; }
+.subscribers { grid-area: subs; }
 
 h1 { font-size: var(--fs-head); line-height: 1.04; font-weight: 700; letter-spacing: -0.02em; text-wrap: balance; }
 .dek { font-size: var(--fs-lead); line-height: 1.4; margin-top: var(--space-3); color: var(--ink); text-wrap: pretty; max-width: 34ch; }
@@ -79,6 +80,8 @@ h3 { font-size: var(--fs-body); font-weight: 700; }
 .cover-link img { width: 100%; }
 .cover figcaption { display: flex; flex-direction: column; gap: 2px; margin-top: var(--space-2); font-size: var(--fs-small); line-height: 1.35; }
 .cover .meta { color: var(--ink-2); }
+.paper-links { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin-top: var(--space-2); font-size: var(--fs-small); }
+.paper-links a { min-height: 24px; display: inline-flex; align-items: center; }
 .cover-empty {
   aspect-ratio: 600 / 849; border: 1px solid var(--rule-soft); display: grid; place-items: center;
   padding: var(--space-2); text-align: center; font-size: var(--fs-small); color: var(--ink-2);
@@ -116,6 +119,38 @@ h3 { font-size: var(--fs-body); font-weight: 700; }
 .actions .btn { flex: 1 1 200px; }
 .confirm { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); flex: 1 1 100%; }
 .confirm > span { flex: 1 1 100%; }
+
+/* Editions picker: one row of quick picks and a field for any whole number. */
+.editions { border: 0; padding: 0; margin: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+.editions legend { padding: 0; margin-bottom: var(--space-1); font-size: var(--fs-small); color: var(--ink-2); }
+.picks { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.pick {
+  font: inherit; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--fs-small);
+  min-width: 48px; min-height: 44px; padding: 0 var(--space-3);
+  border: 1px solid var(--rule-soft); border-radius: 0; background: transparent; color: var(--ink); cursor: pointer;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out;
+  touch-action: manipulation;
+}
+.pick:hover { background: var(--paper-2); border-color: var(--ink-2); }
+.pick[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--paper); }
+.count {
+  font: inherit; font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: var(--fs-body);
+  flex: 1 1 88px; min-width: 0; max-width: 140px; min-height: 44px; padding: 0 var(--space-3);
+  border: 1px solid var(--ink); border-radius: 0; background: #fffdf7; color: var(--ink);
+}
+.count[aria-invalid="true"] { border-color: var(--red); box-shadow: inset 0 0 0 1px var(--red); }
+.adder { display: flex; flex-direction: column; gap: var(--space-3); border-top: 1px solid var(--rule-soft); padding-top: var(--space-3); }
+
+/* Subscribers: one compact row each. */
+.subs { width: 100%; max-width: 760px; border-collapse: collapse; font-size: var(--fs-small); }
+.subs th { text-align: left; font-weight: 400; color: var(--ink-2); padding: var(--space-1) var(--space-2) var(--space-1) 0; border-bottom: 1px solid var(--rule); }
+.subs td { padding: var(--space-1) var(--space-2) var(--space-1) 0; border-bottom: 1px solid var(--rule-soft); vertical-align: baseline; }
+.subs .n { text-align: right; padding-right: var(--space-4); white-space: nowrap; }
+.subs .who { overflow-wrap: anywhere; }
+.subs .who a { display: inline-block; min-height: 24px; padding: 2px 0; }
+.subs tr.mine td { background: var(--paper-2); }
+.you { margin-left: var(--space-2); padding: 0 var(--space-1); border: 1px solid var(--ink); font-size: var(--fs-small); }
+.show-all { align-self: flex-start; }
 
 .note { font-size: var(--fs-small); color: var(--ink-2); line-height: 1.45; overflow-wrap: anywhere; }
 .note.warn, .note.error { color: var(--red); }
@@ -171,22 +206,36 @@ h3 { font-size: var(--fs-body); font-weight: 700; }
 
 @media (min-width: 640px) {
   .sheet-bg { align-items: center; }
-  .front { grid-template-columns: minmax(0, 1fr) 200px; }
+}
+
+/* Middle width: Subscribe sits in the left column under the headline, beside the cover;
+   Deliver and Subscribers follow at full width. */
+@media (min-width: 640px) and (max-width: 959.98px) {
+  .front {
+    grid-template-columns: minmax(0, 1fr) 220px;
+    grid-template-areas: "lead cover" "subscribe cover" "deliver deliver" "subs subs";
+    grid-template-rows: auto 1fr;
+    column-gap: 0;
+  }
+  .lead, .subscribe { padding-right: var(--space-5); }
+  .cover { padding: var(--space-4) 0 var(--space-4) var(--space-5); border-left: 1px solid var(--rule); }
 }
 
 @media (min-width: 960px) {
   .front {
     grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.8fr) minmax(0, 1fr);
-    grid-template-areas: "lead cover deliver" "subscribe cover deliver";
+    grid-template-areas: "lead cover deliver" "subscribe cover deliver" "subs subs subs";
     grid-template-rows: auto 1fr;
     column-gap: 0;
   }
   .lead, .subscribe { padding-right: var(--space-5); }
   .cover { padding: var(--space-4) var(--space-5) var(--space-4); border-left: 1px solid var(--rule); border-right: 1px solid var(--rule); }
   .deliver { border-top: 0; padding-left: var(--space-5); }
-  .cover-link img, .cover-empty { max-height: 62vh; object-fit: contain; width: 100%; }
+  .cover-link img, .paper-links { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-3); margin-top: var(--space-2); font-size: var(--fs-small); }
+.paper-links a { min-height: 24px; display: inline-flex; align-items: center; }
+.cover-empty { max-height: 62vh; object-fit: contain; width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .btn, .sheet .row { transition: none; }
+  .btn, .sheet .row, .pick { transition: none; }
 }

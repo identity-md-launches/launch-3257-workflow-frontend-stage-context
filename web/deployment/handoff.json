@@ -1,29 +1,29 @@
 {
-  "chainId": 1,
-  "repoUrl": "https://github.com/identity-md-launches/launch-3256-paperroute",
   "version": 1,
   "launchId": "387ee0d8-76b3-479d-8841-747a82c08563",
+  "chainId": 1,
+  "repoUrl": "https://github.com/identity-md-launches/launch-3256-paperroute",
+  "sourceCommit": "4102dde307cd2409f01538a073dff91f6debfac7",
+  "attestationHash": "d986ec4c791d8bc3f4c0199ae161b3c38c0d9e267ca03aa7468c3d0b64c9e6f0",
   "manifest": {
     "kind": "evm_contracts",
-    "notes": "PaperRoute is a subscription to The IMD Daily on Ethereum mainnet. It declares no constructor, so it takes no arguments: IMD (0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7) and The IMD Daily ERC-1155 (0xb8fd2b7fb37cbf03a26b4c4688ed5cce86c0a9c5) are compile-time constants, as are the prices (0.125 IMD an edition: 0.1 IMD for the copy, 0.025 IMD tip to the deliverer), the 20-hour delivery interval and the per-mint gas allowance. Deployment makes no external call and sends no ETH. PaperRoute has no owner, admin, maker fee, pause or upgrade, and needs no call after deployment, so $owner is not used. subscribe(editions) pulls editions x 0.125 IMD; cancel() refunds unused editions in full; deliver(issueId, subscribers) is open to anyone, mints one copy of an open issue to each due subscriber, and pays the caller 0.025 IMD per copy. This launch has no token, pool, NFT collection or liquidity.",
     "contracts": [
       {
         "contract": "PaperRoute",
         "constructorArgs": []
       }
-    ]
+    ],
+    "notes": "PaperRoute is a subscription to The IMD Daily on Ethereum mainnet. It declares no constructor, so it takes no arguments: IMD (0xd34a99bc0f67ae1bbd63c660e6d0b0dd03e263b7) and The IMD Daily ERC-1155 (0xb8fd2b7fb37cbf03a26b4c4688ed5cce86c0a9c5) are compile-time constants, as are the prices (0.125 IMD an edition: 0.1 IMD for the copy, 0.025 IMD tip to the deliverer), the 20-hour delivery interval and the per-mint gas allowance. Deployment makes no external call and sends no ETH. PaperRoute has no owner, admin, maker fee, pause or upgrade, and needs no call after deployment, so $owner is not used. subscribe(editions) pulls editions x 0.125 IMD; cancel() refunds unused editions in full; deliver(issueId, subscribers) is open to anyone, mints one copy of an open issue to each due subscriber, and pays the caller 0.025 IMD per copy. This launch has no token, pool, NFT collection or liquidity."
   },
   "contracts": [
     {
       "name": "PaperRoute",
-      "txHash": "0xb0e721b1944f618e06d5b8b96c69db5f838d06e310e7d7108db7f8f8babe1e48",
-      "abiHash": "7fed29355b3b4fdf01a36ffb6ba330b8db588164a8ee79fb601cdc5ecdabe080",
       "address": "0xfa530b7f1557f944b7f028d0a0cc0505ece84b61",
+      "txHash": "0xb0e721b1944f618e06d5b8b96c69db5f838d06e310e7d7108db7f8f8babe1e48",
       "blockNumber": 26406815,
-      "creationCodeHash": "a69f40565322e2b6794946ebb29944057f172272d663f286374842ce3b366f2d"
+      "creationCodeHash": "a69f40565322e2b6794946ebb29944057f172272d663f286374842ce3b366f2d",
+      "abiHash": "7fed29355b3b4fdf01a36ffb6ba330b8db588164a8ee79fb601cdc5ecdabe080"
     }
   ],
-  "sourceCommit": "4102dde307cd2409f01538a073dff91f6debfac7",
-  "abiInstructions": "Build ABIs from this exact source commit; compare canonicalKeccak(abi) with abiHash. Verify deployed code on the stated chain before enabling transactions.",
-  "attestationHash": "d986ec4c791d8bc3f4c0199ae161b3c38c0d9e267ca03aa7468c3d0b64c9e6f0"
+  "abiInstructions": "Build ABIs from this exact source commit; compare canonicalKeccak(abi) with abiHash. Verify deployed code on the stated chain before enabling transactions."
 }

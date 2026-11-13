@@ -9,18 +9,36 @@
  * standard interface fragments. No private RPC, key or project ID exists anywhere in this site.
  */
 import { defineChain, type Abi, type Address, type Chain } from "viem";
+import { mainnet } from "viem/chains";
 
 export const SITE_NAME = "Paper Route";
 export const SITE_DESCRIPTION =
-  "Pay 5 IMD once. A copy of each day's edition of The IMD Daily is minted to your wallet, 40 editions in a row.";
-/** The IMD Daily's own reading site; the cover links here. */
-export const DAILY_SITE_URL = "https://the-imd-daily-free-to-read-colle.sites.imd.fun";
+  "Pay once. A copy of each day's edition of The IMD Daily is minted to your wallet, for as many editions as you choose.";
+/** The IMD Daily's own reading site; the cover, "Read the paper" and the footer link here. */
+export const DAILY_SITE_URL = "https://the-imd-daily-free-to-read-colle.sites.imd.fun/";
+/** The IMD Daily on X. */
+export const DAILY_X_URL = "https://x.com/theimddaily";
+export const DAILY_X_HANDLE = "@theimddaily";
 /** Source repository of the deployed contracts and this page. */
 export const SOURCE_REPO_URL = "https://github.com/identity-md-launches/launch-3256-paperroute";
-/** Editions bought by one press of "Subscribe for 5 IMD" (the brief: subscribe(40)). */
-export const SUBSCRIBE_EDITIONS = 40n;
+/** Quick picks in the Editions row, and the one picked when the page loads. */
+export const EDITION_PICKS = [5n, 10n, 50n, 500n] as const;
+export const DEFAULT_EDITIONS = 10n;
+/** Largest number of editions the field accepts in one subscribe(N). */
+export const MAX_EDITIONS = 1_000_000n;
 /** Most addresses passed to one deliver() call (the brief: at most 25 a transaction). */
 export const MAX_DELIVER_BATCH = 25;
+/**
+ * Gas limit the page sets on every deliver() itself: base plus one allowance per listed address.
+ * PaperRoute tries a mint only while about 556,000 gas is left and otherwise skips the address
+ * without reverting, so a wallet's own estimate (taken from a run that already skips) delivers nobody.
+ * Measured minimums on a mainnet fork: 596,976 gas for 1 address, 2,953,489 for 25.
+ */
+export const DELIVER_GAS_BASE = 650_000n;
+export const DELIVER_GAS_PER_ADDRESS = 200_000n;
+export const deliverGas = (addresses: number) => DELIVER_GAS_BASE + DELIVER_GAS_PER_ADDRESS * BigInt(addresses);
+/** Subscribers shown before "Show all N". */
+export const SUBSCRIBER_ROWS = 50;
 /** Block PaperRoute was deployed in (handoff txHash 0xb0e721b1…1e48); event scans start here. */
 export const LOG_FROM_BLOCK = 26406815n;
 /** Widest eth_getLogs window sent to a public RPC. */
@@ -85,6 +103,8 @@ export async function loadDeployment(base = "./"): Promise<Deployment> {
     rpcUrls: { default: { http: n.rpcUrls } },
     blockExplorers: { default: { name: "Explorer", url: n.explorer } },
     testnet: n.testnet,
+    // ENS reverse names (Subscribers list): viem's own Ethereum universal resolver, mainnet only.
+    ...(n.chainId === mainnet.id ? { contracts: { ensUniversalResolver: mainnet.contracts.ensUniversalResolver } } : {}),
   });
   const walletAddChain: WalletAddChain = file.walletAddChain ?? {
     chainId: `0x${n.chainId.toString(16)}`,

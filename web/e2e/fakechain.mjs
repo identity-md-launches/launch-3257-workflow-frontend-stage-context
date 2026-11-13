@@ -8,6 +8,15 @@ import {
 const E = 10n ** 18n;
 export const PRICE = { edition: 125n * E / 1000n, copy: E / 10n, tip: 25n * E / 1000n };
 
+/** PaperRoute's gas behaviour on mainnet: a mint is tried only while about 556,000 gas is left, and one
+ *  delivery uses about 182,000; below the floor the address is skipped without reverting. */
+export const GAS = { floor: 556_000n, perDelivery: 182_000n, overhead: 60_000n, callDefault: 30_000_000n };
+/** viem's ENS universal resolver on Ethereum, answered with names from s.ensNames. */
+const ENS_RESOLVER = "0xeeeeeeee14d718c2b47d9923deab1335e144eeee";
+const ensAbi = [{ type: "function", name: "reverseWithGateways", stateMutability: "view",
+  inputs: [{ type: "bytes", name: "reverseName" }, { type: "uint256", name: "coinType" }, { type: "string[]", name: "gateways" }],
+  outputs: [{ type: "string", name: "resolvedName" }, { type: "address", name: "resolver" }, { type: "address", name: "reverseResolver" }] }];
+
 export function createChain({ prAbi, prAddress, imd, daily, erc20Abi, dailyAbi }) {
   const abi = [...prAbi, ...erc20Abi, ...dailyAbi];
   const now = () => BigInt(Math.floor(Date.now() / 1000));
@@ -23,6 +32,9 @@ export function createChain({ prAbi, prAddress, imd, daily, erc20Abi, dailyAbi }
     receipts: {},
     sent: [],              // decoded wallet transactions, for assertions
     walletChain: "0x5",
+    walletGas: null,
+    mintFails: false,      // every mint reverts inside deliver (due() still lists the subscribers)       // when set, the test wallet replaces the page's gas limit with this (as some wallets do)
+    ensNames: {},          // lowercase address -> ENS name
     knownChains: new Set(["0x5"]),
     added: [],
     rejectNext: false,
@@ -55,7 +67,13 @@ export function createChain({ prAbi, prAddress, imd, daily, erc20Abi, dailyAbi }
   };
 
   /** Executes (or, with apply=false, simulates) a call; returns the function's outputs. */
-  function exec(from, to, data, apply) {
+  function exec(from, to, data, apply, gas) {
+    if (lc(to) === ENS_RESOLVER) {
+      const { args } = decodeFunctionData({ abi: ensAbi, data });
+      const name = s.ensNames[lc(args[0])];
+      if (!name) { const e = new Error("reverted"); e.rpc = { code: 3, message: "execution reverted" }; throw e; }
+      return encodeFunctionResult({ abi: ensAbi, functionName: "reverseWithGateways", result: [name, imd, imd] });
+    }
     const { functionName: fn, args = [] } = decodeFunctionData({ abi, data });
     const out = (v) => encodeFunctionResult({ abi, functionName: fn, result: v });
     const t = lc(to);
@@ -69,6 +87,9 @@ export function createChain({ prAbi, prAddress, imd, daily, erc20Abi, dailyAbi }
         case "subscriberCount": return out(BigInt(s.list.length));
         case "subscriptionOf": { const x = sub(args[0]); return out({ editionsLeft: x.editionsLeft, lastIssue: x.lastIssue, lastDeliveredAt: x.lastDeliveredAt }); }
         case "editionsLeft": return out(sub(args[0]).editionsLeft);
+        case "lastDeliveredAt": return out(sub(args[0]).lastDeliveredAt);
+        case "reservedEditions": return out(s.list.reduce((n, a) => n + sub(a).editionsLeft, 0n));
+        case "subscribers": { const [off, lim] = args; return out(s.list.slice(Number(off), Number(off + lim)).map((a) => getAddress(a))); }
         case "due": {
           const [id, off, lim] = args;
           if (!s.open || id !== s.issueCount) return out([]);
@@ -102,7 +123,16 @@ export function createChain({ prAbi, prAddress, imd, daily, erc20Abi, dailyAbi }
         case "deliver": {
           const [id, readers] = args;
           if (!s.open || id !== s.issueCount) revert("IssueNotOpen", [id]);
-          const done = readers.filter((a) => isDue(a, id));
+          // Gas: like PaperRoute, skip (never revert) once too little gas is left for another mint.
+          let left = BigInt(gas ?? GAS.callDefault) - GAS.overhead;
+          const done = [];
+          for (const a of readers) {
+            if (!isDue(a, id)) continue;
+            if (left < GAS.floor) break;
+            if (s.mintFails) continue; // The IMD Daily reverts the mint: skipped (MintFailed), still listed by due()
+            left -= GAS.perDelivery;
+            done.push(a);
+          }
           if (apply) {
             for (const a of done) {
               const x = sub(a);
@@ -173,7 +203,7 @@ export function createChain({ prAbi, prAddress, imd, daily, erc20Abi, dailyAbi }
       case "eth_getTransactionCount": return toHex(s.nonce);
       case "eth_getBlockByNumber": return blockObj(params[0] === "latest" ? s.block : BigInt(params[0]));
       case "eth_getBlockByHash": return blockObj(s.block);
-      case "eth_call": return exec(params[0].from ?? "0x0000000000000000000000000000000000000001", params[0].to, params[0].data ?? params[0].input, false);
+      case "eth_call": return exec(params[0].from ?? "0x0000000000000000000000000000000000000001", params[0].to, params[0].data ?? params[0].input, false, params[0].gas);
       case "eth_getLogs": return logsFor(params[0]);
       case "eth_getTransactionReceipt": return s.receipts[params[0]] ?? null;
       case "eth_getTransactionByHash": {
@@ -207,13 +237,21 @@ export function createChain({ prAbi, prAddress, imd, daily, erc20Abi, dailyAbi }
         s.block += 1n; s.nonce += 1;
         const hash = keccak256(toHex(`tx${s.nonce}`));
         const before = s.logs.length;
-        exec(tx.from, tx.to, tx.data ?? tx.input, true);
-        for (const l of s.logs.slice(before)) { l.block = s.block; l.tx = hash; }
-        s.sent.push({ to: lc(tx.to), functionName, args, hash });
+        // No gas field: the wallet fills in its own estimate (eth_estimateGas answers 200,000 here).
+        const gasUsed = s.walletGas ?? (tx.gas ? BigInt(tx.gas) : 200_000n);
+        exec(tx.from, tx.to, tx.data ?? tx.input, true, gasUsed);
+        const emitted = s.logs.slice(before);
+        for (const l of emitted) { l.block = s.block; l.tx = hash; }
+        s.sent.push({ to: lc(tx.to), functionName, args, hash, gas: tx.gas ? BigInt(tx.gas) : null, gasUsed });
         s.receipts[hash] = {
           transactionHash: hash, blockNumber: toHex(s.block), blockHash: keccak256(toHex(s.block)), status: "0x1",
           from: lc(tx.from), to: lc(tx.to), gasUsed: "0x30d40", cumulativeGasUsed: "0x30d40", effectiveGasPrice: "0x3b9aca00",
-          logs: [], logsBloom: "0x" + "0".repeat(512), transactionIndex: "0x0", type: "0x2", contractAddress: null,
+          logs: emitted.map((l, i) => ({
+            address: lc(prAddress), topics: encodeEventTopics({ abi: prAbi, eventName: l.eventName, args: l.args }), data: "0x",
+            blockNumber: toHex(s.block), transactionHash: hash, transactionIndex: "0x0", blockHash: keccak256(toHex(s.block)),
+            logIndex: toHex(i), removed: false,
+          })),
+          logsBloom: "0x" + "0".repeat(512), transactionIndex: "0x0", type: "0x2", contractAddress: null,
         };
         return hash;
       }

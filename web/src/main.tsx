@@ -13,12 +13,13 @@ const root = createRoot(document.getElementById("root")!);
 loadDeployment()
   .then((dep) => {
     // Wallet connection the network's one way: EIP-6963 extensions, Coinbase Smart Wallet, and on
-    // phones the "Open in" links. No relay, no project ID. Reads go to the manifest's public RPCs.
+    // phones the "Open in" links. No relay, no project ID. Reads go to the manifest's public RPCs,
+    // with JSON-RPC batching so the Subscribers list (two reads an address) stays a few requests.
     const wagmi = createConfig({
       chains: [dep.chain],
       multiInjectedProviderDiscovery: true,
       connectors: [injected(), coinbaseWallet({ appName: SITE_NAME, preference: { options: "all", telemetry: false } })],
-      transports: { [dep.chain.id]: fallback(dep.file.network.rpcUrls.map((u) => http(u))) },
+      transports: { [dep.chain.id]: fallback(dep.file.network.rpcUrls.map((u) => http(u, { batch: { batchSize: 25 } }))) },
     });
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: 2, refetchOnWindowFocus: false } } });
     root.render(
